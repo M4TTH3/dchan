@@ -9,6 +9,7 @@ Current distributed channels are focused on 1 -> 1 connections built on top of R
 A few examples are:
 - https://github.com/dradtke/distchan
 - https://github.com/billziss-gh/netchan
+- https://github.com/asynkron/protoactor-go
 - https://github.com/Tochemey/goakt
 
 Main Implementation:
