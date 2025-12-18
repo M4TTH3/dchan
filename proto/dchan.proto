@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package dchan;
+
+option go_package = "github.com/m4tth3/dchan/proto";
+
+// ReceiveRequest contains Gob-encoded data to be decoded by the server
+message ReceiveRequest {
+  // Data contains the Gob-encoded struct
+  bytes data = 1;
+}
+
+// ReceiveResponse is an empty response acknowledging receipt
+message ReceiveResponse {
+}
+
+// DChanService provides RPC methods for distributed channel operations
+service DChanService {
+  // Receive accepts Gob-encoded data for the server to decode
+  rpc Receive(ReceiveRequest) returns (ReceiveResponse);
+}
+

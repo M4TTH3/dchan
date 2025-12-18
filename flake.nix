@@ -21,6 +21,10 @@
             air               # live reload
             gotests           # generate table-driven tests
             impl              # generate interface stubs
+
+            protobuf
+            protoc-gen-go
+            protoc-gen-go-grpc
           ];
 
           shellHook = ''
