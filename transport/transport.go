@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/m4tth3/raft-grpc-transport/proto"
+	pb "github.com/m4tth3/dchan/transport/proto"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
 	"github.com/pkg/errors"

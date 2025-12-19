@@ -1,4 +1,4 @@
-package transport_test
+package transport
 
 import (
 	"bytes"
@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"testing"
 
-	transport "github.com/m4tth3/raft-grpc-transport"
 	"github.com/hashicorp/raft"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
@@ -22,10 +21,10 @@ func makeTestPair(ctx context.Context, t *testing.T) (raft.Transport, raft.Trans
 	t2Listen := bufconn.Listen(1024)
 	shutdownSig := make(chan struct{})
 
-	t1 := transport.New(raft.ServerAddress("t1"), []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+	t1 := New(raft.ServerAddress("t1"), []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return t2Listen.Dial()
 	})})
-	t2 := transport.New(raft.ServerAddress("t2"), []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+	t2 := New(raft.ServerAddress("t2"), []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return t1Listen.Dial()
 	})})
 

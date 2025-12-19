@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option go_package = "github.com/m4tth3/raft-grpc-transport/proto";
+option go_package = "github.com/m4tth3/dchan/transport/proto";
 
 import "google/protobuf/timestamp.proto";
 
