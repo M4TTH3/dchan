@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	pb "github.com/m4tth3/raft-grpc-transport/proto"
+	pb "github.com/m4tth3/dchan/transport/proto"
 	"github.com/hashicorp/raft"
 )
 

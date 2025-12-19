@@ -1,7 +1,7 @@
 package transport
 
 import (
-	pb "github.com/m4tth3/raft-grpc-transport/proto"
+	pb "github.com/m4tth3/dchan/transport/proto"
 	"github.com/hashicorp/raft"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -26,7 +26,6 @@ func encodeAppendEntriesRequest(s *raft.AppendEntriesRequest) *pb.AppendEntriesR
 	return &pb.AppendEntriesRequest{
 		RpcHeader:         encodeRPCHeader(s.RPCHeader),
 		Term:              s.Term,
-		Leader:            s.Leader,
 		PrevLogEntry:      s.PrevLogEntry,
 		PrevLogTerm:       s.PrevLogTerm,
 		Entries:           encodeLogs(s.Entries),
@@ -38,7 +37,6 @@ func decodeAppendEntriesRequest(m *pb.AppendEntriesRequest) *raft.AppendEntriesR
 	return &raft.AppendEntriesRequest{
 		RPCHeader:         decodeRPCHeader(m.RpcHeader),
 		Term:              m.Term,
-		Leader:            m.Leader,
 		PrevLogEntry:      m.PrevLogEntry,
 		PrevLogTerm:       m.PrevLogTerm,
 		Entries:           decodeLogs(m.Entries),
@@ -162,7 +160,6 @@ func encodeRequestVoteRequest(s *raft.RequestVoteRequest) *pb.RequestVoteRequest
 	return &pb.RequestVoteRequest{
 		RpcHeader:          encodeRPCHeader(s.RPCHeader),
 		Term:               s.Term,
-		Candidate:          s.Candidate,
 		LastLogIndex:       s.LastLogIndex,
 		LastLogTerm:        s.LastLogTerm,
 		LeadershipTransfer: s.LeadershipTransfer,
@@ -173,7 +170,6 @@ func decodeRequestVoteRequest(m *pb.RequestVoteRequest) *raft.RequestVoteRequest
 	return &raft.RequestVoteRequest{
 		RPCHeader:          decodeRPCHeader(m.RpcHeader),
 		Term:               m.Term,
-		Candidate:          m.Candidate,
 		LastLogIndex:       m.LastLogIndex,
 		LastLogTerm:        m.LastLogTerm,
 		LeadershipTransfer: m.LeadershipTransfer,

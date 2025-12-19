@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	fuzz "github.com/google/gofuzz"
 	"github.com/hashicorp/raft"
 	"go.uber.org/goleak"
@@ -20,7 +21,13 @@ func doFuzz(rm interface{}, i int) {
 
 func verify(t *testing.T, rm1, rm2 interface{}) {
 	t.Helper()
-	if diff := cmp.Diff(rm1, rm2); diff != "" {
+
+	opts := cmp.Options{
+		cmpopts.IgnoreFields(raft.AppendEntriesRequest{}, "Leader"),
+		cmpopts.IgnoreFields(raft.RequestVoteRequest{}, "Candidate"),
+	}
+
+	if diff := cmp.Diff(rm1, rm2, opts); diff != "" {
 		t.Errorf("encode+decode return another value: %s", diff)
 	}
 }

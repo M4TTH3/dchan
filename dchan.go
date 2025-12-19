@@ -49,5 +49,5 @@ func newRaft() {
 	// https://github.com/Jille/raft-grpc-example/blob/master/main.go
 	// https://github.com/hashicorp/raft-boltdb
 	// https://github.com/hashicorp/raft
-	transportManager := transport.New(raft.ServerAddress("localhost:1234"), []grpc.DialOption{})
+	_ = transport.New(raft.ServerAddress("localhost:1234"), []grpc.DialOption{})
 }

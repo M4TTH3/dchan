@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/m4tth3/raft-grpc-transport/proto"
 	"github.com/hashicorp/raft"
+	pb "github.com/m4tth3/dchan/transport/proto"
 	"google.golang.org/grpc"
 )
 

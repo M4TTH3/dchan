@@ -79,7 +79,7 @@ func TestAppendEntries(t *testing.T) {
 			case <-stop:
 				return
 			case rpc := <-t2.Consumer():
-				if got, want := rpc.Command.(*raft.AppendEntriesRequest).Leader, []byte{3, 2, 1}; !bytes.Equal(got, want) {
+				if got, want := rpc.Command.(*raft.AppendEntriesRequest).Addr, []byte{3, 2, 1}; !bytes.Equal(got, want) {
 					t.Errorf("request.Leader = %v, want %v", got, want)
 				}
 				if got, want := rpc.Command.(*raft.AppendEntriesRequest).Entries, []*raft.Log{
@@ -97,7 +97,11 @@ func TestAppendEntries(t *testing.T) {
 
 	var resp raft.AppendEntriesResponse
 	if err := t1.AppendEntries("t2", "t2", &raft.AppendEntriesRequest{
-		Leader: []byte{3, 2, 1},
+		RPCHeader: raft.RPCHeader{
+			ProtocolVersion: 1,
+			ID:              []byte{3, 2, 1},
+			Addr:            []byte{3, 2, 1},
+		},
 		Entries: []*raft.Log{
 			{Type: raft.LogNoop, Extensions: []byte{1}, Data: []byte{55}},
 		},

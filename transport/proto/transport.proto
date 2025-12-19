@@ -46,11 +46,10 @@ message Log {
 message AppendEntriesRequest {
 	RPCHeader rpc_header = 1;
 	uint64 term = 2;
-	bytes leader = 3;
-	uint64 prev_log_entry = 4;
-	uint64 prev_log_term = 5;
-	repeated Log entries = 6;
-	uint64 leader_commit_index = 7;
+	uint64 prev_log_entry = 3;
+	uint64 prev_log_term = 4;
+	repeated Log entries = 5;
+	uint64 leader_commit_index = 6;
 }
 
 message AppendEntriesResponse {
@@ -64,10 +63,9 @@ message AppendEntriesResponse {
 message RequestVoteRequest {
 	RPCHeader rpc_header = 1;
 	uint64 term = 2;
-	bytes candidate = 3;
-	uint64 last_log_index = 4;
-	uint64 last_log_term = 5;
-	bool leadership_transfer = 6;
+	uint64 last_log_index = 3;
+	uint64 last_log_term = 4;
+	bool leadership_transfer = 5;
 }
 
 message RequestVoteResponse {

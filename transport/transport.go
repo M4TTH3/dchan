@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/m4tth3/dchan/transport/proto"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
+	pb "github.com/m4tth3/dchan/transport/proto"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 )
@@ -40,7 +40,7 @@ func New(localAddress raft.ServerAddress, dialOptions []grpc.DialOption, options
 		dialOptions:  dialOptions,
 
 		rpcChan:     make(chan raft.RPC),
-		connections: map[raft.ServerAddress]*conn{},
+		connections: make(map[raft.ServerAddress]*conn),
 
 		shutdownCh: make(chan struct{}),
 	}
