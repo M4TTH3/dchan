@@ -4,20 +4,20 @@ import (
 	"context"
 	"io"
 
-	pb "github.com/m4tth3/dchan/transport/proto"
 	"github.com/hashicorp/raft"
+	pb "github.com/m4tth3/dchan/transport/proto"
 )
 
 // These are requests incoming over gRPC that we need to relay to the Raft engine.
 
-type gRPCAPI struct {
+type raftServer struct {
 	manager *Manager
 
 	// "Unsafe" to ensure compilation fails if new methods are added but not implemented
 	pb.UnsafeRaftTransportServer
 }
 
-func (g gRPCAPI) handleRPC(command interface{}, data io.Reader) (interface{}, error) {
+func (g raftServer) handleRPC(command any, data io.Reader) (any, error) {
 	ch := make(chan raft.RPCResponse, 1)
 	rpc := raft.RPC{
 		Command:  command,
@@ -52,7 +52,7 @@ wait:
 	}
 }
 
-func (g gRPCAPI) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (g raftServer) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	resp, err := g.handleRPC(decodeAppendEntriesRequest(req), nil)
 	if err != nil {
 		return nil, err
@@ -60,7 +60,7 @@ func (g gRPCAPI) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest
 	return encodeAppendEntriesResponse(resp.(*raft.AppendEntriesResponse)), nil
 }
 
-func (g gRPCAPI) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (g raftServer) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	resp, err := g.handleRPC(decodeRequestVoteRequest(req), nil)
 	if err != nil {
 		return nil, err
@@ -68,7 +68,7 @@ func (g gRPCAPI) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*
 	return encodeRequestVoteResponse(resp.(*raft.RequestVoteResponse)), nil
 }
 
-func (g gRPCAPI) TimeoutNow(ctx context.Context, req *pb.TimeoutNowRequest) (*pb.TimeoutNowResponse, error) {
+func (g raftServer) TimeoutNow(ctx context.Context, req *pb.TimeoutNowRequest) (*pb.TimeoutNowResponse, error) {
 	resp, err := g.handleRPC(decodeTimeoutNowRequest(req), nil)
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func (g gRPCAPI) TimeoutNow(ctx context.Context, req *pb.TimeoutNowRequest) (*pb
 	return encodeTimeoutNowResponse(resp.(*raft.TimeoutNowResponse)), nil
 }
 
-func (g gRPCAPI) RequestPreVote(ctx context.Context, req *pb.RequestPreVoteRequest) (*pb.RequestPreVoteResponse, error) {
+func (g raftServer) RequestPreVote(ctx context.Context, req *pb.RequestPreVoteRequest) (*pb.RequestPreVoteResponse, error) {
 	resp, err := g.handleRPC(decodeRequestPreVoteRequest(req), nil)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (g gRPCAPI) RequestPreVote(ctx context.Context, req *pb.RequestPreVoteReque
 	return encodeRequestPreVoteResponse(resp.(*raft.RequestPreVoteResponse)), nil
 }
 
-func (g gRPCAPI) InstallSnapshot(s pb.RaftTransport_InstallSnapshotServer) error {
+func (g raftServer) InstallSnapshot(s pb.RaftTransport_InstallSnapshotServer) error {
 	isr, err := s.Recv()
 	if err != nil {
 		return err
@@ -119,7 +119,7 @@ func (s *snapshotStream) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-func (g gRPCAPI) AppendEntriesPipeline(s pb.RaftTransport_AppendEntriesPipelineServer) error {
+func (g raftServer) AppendEntriesPipeline(s pb.RaftTransport_AppendEntriesPipelineServer) error {
 	for {
 		msg, err := s.Recv()
 		if err != nil {
@@ -137,7 +137,7 @@ func (g gRPCAPI) AppendEntriesPipeline(s pb.RaftTransport_AppendEntriesPipelineS
 	}
 }
 
-func isHeartbeat(command interface{}) bool {
+func isHeartbeat(command any) bool {
 	req, ok := command.(*raft.AppendEntriesRequest)
 	if !ok {
 		return false

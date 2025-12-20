@@ -15,16 +15,24 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
+var (
+	ServerID1 = raft.ServerID("t1")
+	ServerID2 = raft.ServerID("t2")
+	ServerAddress1 = raft.ServerAddress("passthrough:///t1")
+	ServerAddress2 = raft.ServerAddress("passthrough:///t2")
+)
+
 func makeTestPair(ctx context.Context, t *testing.T) (raft.Transport, raft.Transport, chan struct{}) {
 	t.Helper()
 	t1Listen := bufconn.Listen(1024)
 	t2Listen := bufconn.Listen(1024)
 	shutdownSig := make(chan struct{})
 
-	t1 := New(raft.ServerAddress("t1"), []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+	t1 := New(ServerAddress1, []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return t2Listen.Dial()
 	})})
-	t2 := New(raft.ServerAddress("t2"), []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+
+	t2 := New(ServerAddress2, []grpc.DialOption{grpc.WithInsecure(), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 		return t1Listen.Dial()
 	})})
 
@@ -96,7 +104,7 @@ func TestAppendEntries(t *testing.T) {
 	}()
 
 	var resp raft.AppendEntriesResponse
-	if err := t1.AppendEntries("t2", "t2", &raft.AppendEntriesRequest{
+	if err := t1.AppendEntries(ServerID2, ServerAddress2, &raft.AppendEntriesRequest{
 		RPCHeader: raft.RPCHeader{
 			ProtocolVersion: 1,
 			ID:              []byte{3, 2, 1},
@@ -171,7 +179,7 @@ func TestSnapshot(t *testing.T) {
 
 	var resp raft.InstallSnapshotResponse
 	b := bytes.Repeat([]byte{89}, 654321)
-	if err := t1.InstallSnapshot("t2", "t2", &raft.InstallSnapshotRequest{
+	if err := t1.InstallSnapshot(ServerID2, ServerAddress2, &raft.InstallSnapshotRequest{
 		Term:               123,
 		Leader:             []byte{2},
 		Configuration:      []byte{4, 2, 3},
