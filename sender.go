@@ -10,6 +10,17 @@ import (
 	p "github.com/m4tth3/dchan/proto"
 )
 
+type WaitingSend struct {
+	value any
+
+	ctx  context.Context
+	done context.CancelFunc
+}
+
+func (w *WaitingSend) Done() <-chan struct{} {
+	return w.ctx.Done()
+}
+
 type sender struct {
 	dchan *dChan
 	chann *channel
@@ -21,42 +32,41 @@ type sender struct {
 //
 // This function provides backpressure to the sender and
 // at most once semantics.
-func (s *sender) send(v any) {
+func (s *sender) send(v any, ctx context.Context) {
 	var target ServerId
 
 	for {
 		s.i++ // Increment to "round-robin" as best as possible
 
-		s.dchan.rcmu.Lock()
+		s.dchan.rcmu.RLock()
 		externalChannel := s.dchan.getExternalChannel(s.chann.namespace)
 		// We should block until we have at least one target.
 		if len(externalChannel.servers) == 0 {
 			// We have to wait and baton pass the write lock from the StateMachine to here
-			baton := make(chan struct{})
-			queueEntry := externalChannel.waitQueue.PushBack(baton)
-			s.dchan.rcmu.Unlock()
+			externalChannel.waitCount.Add(1)
+			s.dchan.rcmu.RUnlock()
 
-			<-baton
+			<-externalChannel.waitQueue // Wait (order doesn't matter)
 
-			// After this point we have the write lock with an id reachable
-			externalChannel.waitQueue.Remove(queueEntry)
-			target = externalChannel.servers[s.i % uint32(len(externalChannel.servers))]
+			// After this point we have the WRITE Lock with an id reachable
+			externalChannel.waitCount.Add(-1)
+			target = externalChannel.servers[s.i%uint32(len(externalChannel.servers))]
 
-			// Scan through to see if we can pass the baton again
-			if externalChannel.waitQueue.Len() > 0 {
-				externalChannel.waitQueue.Front().Value.(chan struct{}) <- struct{}{}
+			// Check if we can pass the baton again
+			if externalChannel.waitCount.Load() > 0 {
+				externalChannel.waitQueue <- struct{}{}
 			} else {
 				s.dchan.rcmu.Unlock()
 			}
 		} else {
-			s.dchan.rcmu.Unlock()
+			s.dchan.rcmu.RUnlock()
 		}
-		
+
 		conn, ok := s.dchan.tm.ConnectionManager().Hijack(raft.ServerAddress(target))
 		if !ok {
 			// Drop message if no connection is found.
 			// TODO: Add Logging support
-			return 
+			return
 		}
 
 		client := p.NewDChanServiceClient(conn)
@@ -70,7 +80,7 @@ func (s *sender) send(v any) {
 		}
 
 		// User can add timeouts via grpc options.
-		resp, err := client.Receive(context.Background(), &p.ReceiveRequest{})
+		resp, err := client.Receive(ctx, &p.ReceiveRequest{})
 		if err != nil {
 			// Drop message if receiving fails.
 			// TODO: Add Logging support
@@ -89,7 +99,13 @@ func (s *sender) start() {
 	go func() {
 		s.i = rand.Uint32() // Randomize the starting point (smart client behavior)
 		for v := range s.chann.ch {
-			s.send(v)
+			obj, ok := v.(WaitingSend)
+			if ok {
+				s.send(obj.value, obj.ctx)
+				obj.done()
+			} else {
+				s.send(v, context.Background())
+			}
 		}
 	}()
 }

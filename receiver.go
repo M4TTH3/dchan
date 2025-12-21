@@ -31,6 +31,7 @@ func (g receiver) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.Receiv
 		return &p.ReceiveResponse{Received: false}, nil
 	}
 
+	receiver.sendingCount.Add(1)
 	g.dchan.rmu.RUnlock()
 
 	var v any
@@ -45,8 +46,15 @@ func (g receiver) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.Receiv
 	select {
 	case receiver.ch <- v:
 	case <-receiver.ctx.Done(): // No more receivers, stop sending.
-		return &p.ReceiveResponse{Received: false}, nil
+		if count := receiver.sendingCount.Add(-1); count == 0 {
+			// Last sender, notify close goroutine to close the channel.
+			receiver.closeCh <- struct{}{}
+		}
+
+		return &p.ReceiveResponse{Received: false}, nil // Reject
 	}
+
+	receiver.sendingCount.Add(-1)
 
 	return &p.ReceiveResponse{Received: true}, nil
 }
