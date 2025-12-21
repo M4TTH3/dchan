@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v6.32.1
-// source: proto/dchan.proto
+// source: dchan.proto
 
 package proto
 
@@ -123,5 +123,5 @@ var DChanService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/dchan.proto",
+	Metadata: "dchan.proto",
 }

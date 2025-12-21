@@ -9,9 +9,9 @@ import (
 )
 
 type ConnectionManager interface {
-	// GetClient returns a client connection for the given target.
-	// If the connection is not found, it returns false
-	GetClient(target raft.ServerAddress) (*grpc.ClientConn, bool)
+	// Hijack returns a client connection for the given target.
+	// If the connection is not found, it returns nil and false.
+	Hijack(target raft.ServerAddress) (*grpc.ClientConn, bool)
 
 	// Register registers a new client connection for the given target.
 	// If the connection already exists, it returns the existing connection.
@@ -46,7 +46,7 @@ type connectionManager struct {
 	dialOptions []grpc.DialOption
 }
 
-func (c *connectionManager) GetClient(target raft.ServerAddress) (*grpc.ClientConn, bool) {
+func (c *connectionManager) Hijack(target raft.ServerAddress) (*grpc.ClientConn, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

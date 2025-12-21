@@ -55,12 +55,12 @@ func TestGetClient_ReuseConnection(t *testing.T) {
 
 	defer pool.Disconnect(target)
 
-	conn1, ok := pool.GetClient(target)
+	conn1, ok := pool.Hijack(target)
 	if !ok {
 		t.Fatalf("GetClient failed")
 	}
 
-	conn2, ok := pool.GetClient(target)
+	conn2, ok := pool.Hijack(target)
 	if !ok {
 		t.Fatalf("GetClient failed")
 	}
@@ -70,7 +70,7 @@ func TestGetClient_ReuseConnection(t *testing.T) {
 		t.Error("GetClient should return the same connection for the same target")
 	}
 
-	_, ok = pool.GetClient("ERROR")
+	_, ok = pool.Hijack("ERROR")
 	if ok {
 		t.Fatalf("GetClient should not return a connection for an error target")
 	}

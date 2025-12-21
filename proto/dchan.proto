@@ -8,10 +8,13 @@ option go_package = "github.com/m4tth3/dchan/proto";
 message ReceiveRequest {
   // Data contains the Gob-encoded struct
   bytes data = 1;
+  string namespace = 2;
 }
 
-// ReceiveResponse is an empty response acknowledging receipt
+// ReceiveResponse acknowledges receipt of the data
+// If the server is no longer receiving, the received field will be false.
 message ReceiveResponse {
+  bool received = 1;
 }
 
 // DChanService provides RPC methods for distributed channel operations

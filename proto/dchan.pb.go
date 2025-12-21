@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.32.1
-// source: proto/dchan.proto
+// source: dchan.proto
 
 package proto
 
@@ -26,13 +26,14 @@ type ReceiveRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Data contains the Gob-encoded struct
 	Data          []byte `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Namespace     string `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReceiveRequest) Reset() {
 	*x = ReceiveRequest{}
-	mi := &file_proto_dchan_proto_msgTypes[0]
+	mi := &file_dchan_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -44,7 +45,7 @@ func (x *ReceiveRequest) String() string {
 func (*ReceiveRequest) ProtoMessage() {}
 
 func (x *ReceiveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_dchan_proto_msgTypes[0]
+	mi := &file_dchan_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -57,7 +58,7 @@ func (x *ReceiveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveRequest.ProtoReflect.Descriptor instead.
 func (*ReceiveRequest) Descriptor() ([]byte, []int) {
-	return file_proto_dchan_proto_rawDescGZIP(), []int{0}
+	return file_dchan_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ReceiveRequest) GetData() []byte {
@@ -67,16 +68,25 @@ func (x *ReceiveRequest) GetData() []byte {
 	return nil
 }
 
-// ReceiveResponse is an empty response acknowledging receipt
+func (x *ReceiveRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+// ReceiveResponse acknowledges receipt of the data
+// If the server is no longer receiving, the received field will be false.
 type ReceiveResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Received      bool                   `protobuf:"varint,1,opt,name=received,proto3" json:"received,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReceiveResponse) Reset() {
 	*x = ReceiveResponse{}
-	mi := &file_proto_dchan_proto_msgTypes[1]
+	mi := &file_dchan_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -88,7 +98,7 @@ func (x *ReceiveResponse) String() string {
 func (*ReceiveResponse) ProtoMessage() {}
 
 func (x *ReceiveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_dchan_proto_msgTypes[1]
+	mi := &file_dchan_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -101,38 +111,47 @@ func (x *ReceiveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveResponse.ProtoReflect.Descriptor instead.
 func (*ReceiveResponse) Descriptor() ([]byte, []int) {
-	return file_proto_dchan_proto_rawDescGZIP(), []int{1}
+	return file_dchan_proto_rawDescGZIP(), []int{1}
 }
 
-var File_proto_dchan_proto protoreflect.FileDescriptor
+func (x *ReceiveResponse) GetReceived() bool {
+	if x != nil {
+		return x.Received
+	}
+	return false
+}
 
-const file_proto_dchan_proto_rawDesc = "" +
+var File_dchan_proto protoreflect.FileDescriptor
+
+const file_dchan_proto_rawDesc = "" +
 	"\n" +
-	"\x11proto/dchan.proto\x12\x05dchan\"$\n" +
+	"\vdchan.proto\x12\x05dchan\"B\n" +
 	"\x0eReceiveRequest\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"\x11\n" +
-	"\x0fReceiveResponse2H\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1c\n" +
+	"\tnamespace\x18\x02 \x01(\tR\tnamespace\"-\n" +
+	"\x0fReceiveResponse\x12\x1a\n" +
+	"\breceived\x18\x01 \x01(\bR\breceived2H\n" +
 	"\fDChanService\x128\n" +
 	"\aReceive\x12\x15.dchan.ReceiveRequest\x1a\x16.dchan.ReceiveResponseB\x1fZ\x1dgithub.com/m4tth3/dchan/protob\x06proto3"
 
 var (
-	file_proto_dchan_proto_rawDescOnce sync.Once
-	file_proto_dchan_proto_rawDescData []byte
+	file_dchan_proto_rawDescOnce sync.Once
+	file_dchan_proto_rawDescData []byte
 )
 
-func file_proto_dchan_proto_rawDescGZIP() []byte {
-	file_proto_dchan_proto_rawDescOnce.Do(func() {
-		file_proto_dchan_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_dchan_proto_rawDesc), len(file_proto_dchan_proto_rawDesc)))
+func file_dchan_proto_rawDescGZIP() []byte {
+	file_dchan_proto_rawDescOnce.Do(func() {
+		file_dchan_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_dchan_proto_rawDesc), len(file_dchan_proto_rawDesc)))
 	})
-	return file_proto_dchan_proto_rawDescData
+	return file_dchan_proto_rawDescData
 }
 
-var file_proto_dchan_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_proto_dchan_proto_goTypes = []any{
+var file_dchan_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_dchan_proto_goTypes = []any{
 	(*ReceiveRequest)(nil),  // 0: dchan.ReceiveRequest
 	(*ReceiveResponse)(nil), // 1: dchan.ReceiveResponse
 }
-var file_proto_dchan_proto_depIdxs = []int32{
+var file_dchan_proto_depIdxs = []int32{
 	0, // 0: dchan.DChanService.Receive:input_type -> dchan.ReceiveRequest
 	1, // 1: dchan.DChanService.Receive:output_type -> dchan.ReceiveResponse
 	1, // [1:2] is the sub-list for method output_type
@@ -142,26 +161,26 @@ var file_proto_dchan_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_proto_dchan_proto_init() }
-func file_proto_dchan_proto_init() {
-	if File_proto_dchan_proto != nil {
+func init() { file_dchan_proto_init() }
+func file_dchan_proto_init() {
+	if File_dchan_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_dchan_proto_rawDesc), len(file_proto_dchan_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dchan_proto_rawDesc), len(file_dchan_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_dchan_proto_goTypes,
-		DependencyIndexes: file_proto_dchan_proto_depIdxs,
-		MessageInfos:      file_proto_dchan_proto_msgTypes,
+		GoTypes:           file_dchan_proto_goTypes,
+		DependencyIndexes: file_dchan_proto_depIdxs,
+		MessageInfos:      file_dchan_proto_msgTypes,
 	}.Build()
-	File_proto_dchan_proto = out.File
-	file_proto_dchan_proto_goTypes = nil
-	file_proto_dchan_proto_depIdxs = nil
+	File_dchan_proto = out.File
+	file_dchan_proto_goTypes = nil
+	file_dchan_proto_depIdxs = nil
 }
