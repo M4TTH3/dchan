@@ -71,9 +71,9 @@ type Chan interface {
 // chann <- sending
 // 
 // <- sending.Done()
-func WithWait(obj any, ctx context.Context) *WaitingSend {
-	ctx, cancel := context.WithCancel(ctx)
-	return &WaitingSend{value: obj, ctx: ctx, done: cancel}
+func WithWait(obj any, ctx context.Context) WaitingSend {
+	objCtx, done := context.WithCancel(context.Background())
+	return WaitingSend{value: obj, sendCtx: ctx, ctx: objCtx, done: done}
 }
 
 // channel contains local chan that tracks reference counts
@@ -157,8 +157,58 @@ func (d *dChan) Send(namespace Namespace, bufferSize BufferSize) (chan<- any, Cl
 		return c.ch, c.closeFunc, nil
 	}
 
-	chann := makeChannel(namespace, bufferSize)
-	chann.closeFunc = func() Future {
+	chann := newChannel(namespace, bufferSize)
+	chann.closeFunc = d.newSendCloseFunc(chann, namespace)
+
+	d.senders[namespace] = chann
+	sender := &sender{dchan: d, chann: chann}
+	sender.start() // Start the sender goroutine.
+
+	return chann.ch, chann.closeFunc, nil
+}
+
+func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any, CloseFunc, error) {
+	d.rmu.Lock()
+	defer d.rmu.Unlock()
+
+	if chann, ok := d.receivers[namespace]; ok {
+		chann.refCount++
+		return chann.ch, chann.closeFunc, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rchann := &rchannel{channel: *newChannel(namespace, bufferSize), ctx: ctx, closeCh: make(chan struct{})}
+	rchann.closeFunc = d.newReceiveCloseFunc(rchann, cancel, namespace)
+
+	d.receivers[namespace] = rchann
+
+	// Create a goroutine to receive messages from a gRPC stream.
+	// Send Raft message to add Receiver to the namespace.
+	return rchann.ch, rchann.closeFunc, nil
+}
+
+func (d *dChan) Close() Future {
+	d.smu.Lock()
+	d.rmu.Lock()
+	d.rcmu.Lock()
+	defer d.rcmu.Unlock()
+	defer d.rmu.Unlock()
+	defer d.smu.Unlock()
+
+	future := d.makeFuture()
+
+	// TODO: Close all channels and remove from senders and receivers.
+	f := d.raft.Shutdown()
+	f.Error()
+
+	return future
+}
+
+// newSendCloseFunc creates a new close function for a sender channel.
+// The close function synchronizes with the sender goroutine to close
+// the channel
+func (d *dChan) newSendCloseFunc(chann *channel, namespace Namespace) CloseFunc {
+	return func() Future {
 		future := d.makeFuture()
 
 		go func() {
@@ -179,27 +229,13 @@ func (d *dChan) Send(namespace Namespace, bufferSize BufferSize) (chan<- any, Cl
 
 		return future
 	}
-
-	d.senders[namespace] = chann
-	sender := &sender{dchan: d, chann: chann}
-	sender.start() // Start the sender goroutine.
-
-	return chann.ch, chann.closeFunc, nil
 }
 
-func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any, CloseFunc, error) {
-	d.rmu.Lock()
-	defer d.rmu.Unlock()
-
-	if chann, ok := d.receivers[namespace]; ok {
-		chann.refCount++
-		return chann.ch, chann.closeFunc, nil
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	chann := makeChannel(namespace, bufferSize)
-	rchann := &rchannel{channel: *chann, ctx: ctx, closeCh: make(chan struct{})}
-	rchann.closeFunc = func() Future {
+// newReceiveCloseFunc creates a new close function for a receiver channel.
+// The close function synchronizes with the receiver goroutines to close
+// the channel
+func (d *dChan) newReceiveCloseFunc(rchann *rchannel, cancel context.CancelFunc, namespace Namespace) CloseFunc {
+	return func() Future {
 		future := d.makeFuture()
 		go func() {
 			d.rmu.Lock()
@@ -232,40 +268,17 @@ func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any,
 				<-rchann.closeCh
 			}
 
-			close(chann.ch)
+			close(rchann.ch)
 			future <- nil
 		}()
 
 		return future
 	}
-
-	d.receivers[namespace] = rchann
-
-	// Create a goroutine to receive messages from a gRPC stream.
-	// Send Raft message to add Receiver to the namespace.
-	return rchann.ch, rchann.closeFunc, nil
 }
 
-func (d *dChan) Close() Future {
-	d.smu.Lock()
-	d.rmu.Lock()
-	d.rcmu.Lock()
-	defer d.rcmu.Unlock()
-	defer d.rmu.Unlock()
-	defer d.smu.Unlock()
-
-	future := d.makeFuture()
-
-	// TODO: Close all channels and remove from senders and receivers.
-	f := d.raft.Shutdown()
-	f.Error()
-
-	return future
-}
-
-// makeChannel creates a new channel with the given namespace and buffer size.
+// newChannel creates a new channel with the given namespace and buffer size.
 // This function is used to create both sender and receiver channels.
-func makeChannel(namespace Namespace, bufferSize BufferSize) *channel {
+func newChannel(namespace Namespace, bufferSize BufferSize) *channel {
 	return &channel{namespace: namespace, ch: make(chan any, bufferSize), refCount: 1, closed: false}
 }
 

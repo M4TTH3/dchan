@@ -10,14 +10,25 @@ import (
 	p "github.com/m4tth3/dchan/proto"
 )
 
+// WaitingSend is a struct that can be used to send a message with a wait
+// until the message is sent. The context is the time to send a message.
+//
+// Warning: Using a client wait should be used with caution because it could
+// block forever (e.g. servers crash). Set a timeout to avoid blocking forever.
+// 
+// The object must be sent through the channel
 type WaitingSend struct {
 	value any
 
+	// context for the gRPC call e.g. how long it should live for
+	sendCtx context.Context
+
+	// lifetime of the send e.g. when it's finished error or not
 	ctx  context.Context
 	done context.CancelFunc
 }
 
-func (w *WaitingSend) Done() <-chan struct{} {
+func (w WaitingSend) Done() <-chan struct{} {
 	return w.ctx.Done()
 }
 
@@ -62,7 +73,7 @@ func (s *sender) send(v any, ctx context.Context) {
 			s.dchan.rcmu.RUnlock()
 		}
 
-		conn, ok := s.dchan.tm.ConnectionManager().Hijack(raft.ServerAddress(target))
+		conn, ok := s.dchan.tm.ConnectionManager().Hijack(raft.ServerAddress(target)) // TODO: maybe switch to register
 		if !ok {
 			// Drop message if no connection is found.
 			// TODO: Add Logging support
@@ -101,7 +112,7 @@ func (s *sender) start() {
 		for v := range s.chann.ch {
 			obj, ok := v.(WaitingSend)
 			if ok {
-				s.send(obj.value, obj.ctx)
+				s.send(obj.value, obj.sendCtx)
 				obj.done()
 			} else {
 				s.send(v, context.Background())
