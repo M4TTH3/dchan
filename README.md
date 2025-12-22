@@ -8,6 +8,7 @@ For a native feel, the library is built on gRPC with Gob encoding to pass struct
 
 ## Usage Example
 ```go
+// Server 1
 func main() {
     options := []dchan.Options {
         // Other Server IDs or at least one for discovery
@@ -24,7 +25,7 @@ func main() {
     item <- fooCh // receive from a sender
 
     // chan<- any, CloseFunc, error
-    oofCh, closeOof, err = chann.Receive("OofChannel", bufSize)
+    oofCh, closeOof, err = chann.Send("OofChannel", bufSize)
     defer closeOof()
 
     // Send the message to one of the receivers in cluster
@@ -33,13 +34,23 @@ func main() {
 
     // Optionally use:
     ctx := context.WithTimeout(context.Background(), timeout) // Timeout is optional
-    oofObj := dchan.WithWait(oofObj, ctx)
+    oofObj := dchan.WithWait(oof{}, ctx)
     select{
     case oofCh <- oof{}:
     case ctx.Done(): // cancel if timeout finishes first
     }
 
     <-oofObj.Done() // Wait until it's sent e.g. if it's buffered
+}
+
+// Server 2
+func main() {
+    ...
+    // Sending to server 1 (or any other servers registered)
+    fooCh <- foo{}
+
+    // Receiving from server 1 (or any other servers registered)
+    fmt.Println((<-oofObj).(oof).String())
 }
 
 ```
