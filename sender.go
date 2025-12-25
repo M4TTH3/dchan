@@ -15,7 +15,7 @@ import (
 //
 // Warning: Using a client wait should be used with caution because it could
 // block forever (e.g. servers crash). Set a timeout to avoid blocking forever.
-// 
+//
 // The object must be sent through the channel
 type WaitingSend struct {
 	value any
@@ -43,34 +43,42 @@ type sender struct {
 //
 // This function provides backpressure to the sender and
 // at most once semantics.
+//
+// TODO: support sending the encoded as chunks.
 func (s *sender) send(v any, ctx context.Context) {
 	var target ServerId
 
 	for {
 		s.i++ // Increment to "round-robin" as best as possible
 
-		s.dchan.rcmu.RLock()
+		s.dchan.extmu.RLock()
 		externalChannel := s.dchan.getExternalChannel(s.chann.namespace)
 		// We should block until we have at least one target.
-		if len(externalChannel.servers) == 0 {
+		if externalChannel.servers.len() == 0 {
 			// We have to wait and baton pass the write lock from the StateMachine to here
 			externalChannel.waitCount.Add(1)
-			s.dchan.rcmu.RUnlock()
+			s.dchan.extmu.RUnlock()
 
 			<-externalChannel.waitQueue // Wait (order doesn't matter)
 
 			// After this point we have the WRITE Lock with an id reachable
 			externalChannel.waitCount.Add(-1)
-			target = externalChannel.servers[s.i%uint32(len(externalChannel.servers))]
+			value, ok := externalChannel.servers.get(int(s.i % uint32(externalChannel.servers.len()))); if !ok {
+				// Drop message if no target is found.
+				// TODO: Add Logging support
+				return
+			} else {
+				target = value // Set the target to the next server.
+			}
 
 			// Check if we can pass the baton again
 			if externalChannel.waitCount.Load() > 0 {
 				externalChannel.waitQueue <- struct{}{}
 			} else {
-				s.dchan.rcmu.Unlock()
+				s.dchan.extmu.Unlock()
 			}
 		} else {
-			s.dchan.rcmu.RUnlock()
+			s.dchan.extmu.RUnlock()
 		}
 
 		conn, ok := s.dchan.tm.ConnectionManager().Hijack(raft.ServerAddress(target)) // TODO: maybe switch to register
@@ -118,5 +126,8 @@ func (s *sender) start() {
 				s.send(v, context.Background())
 			}
 		}
+
+		// Notify it's finished.
+		s.chann.closeCh <- struct{}{}
 	}()
 }

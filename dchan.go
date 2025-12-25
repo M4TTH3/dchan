@@ -3,6 +3,7 @@ package dchan
 import (
 	"context"
 	"encoding/gob"
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -17,7 +18,6 @@ type RpcClient = p.DChanServiceClient
 type ServerId string
 type Namespace string
 
-type Future = <-chan error
 type CloseFunc func() Future
 
 type BufferSize int
@@ -29,7 +29,7 @@ type CustomEncodable interface {
 }
 
 // Chan is the interface for a distributed channel that can be used to send and receive messages between nodes.
-
+// Note: it only works with exported fields (unexported fields are ignored).
 type Chan interface {
 	// Send returns a channel that can be used to send messages to the distributed channel.
 	// Explicitly run CloseFunc when the channel is no longer needed.
@@ -53,6 +53,9 @@ type Chan interface {
 	//
 	// Note: The CloseFunc is asynchronous and returns a Future (asynchronous channel)
 	//       The channel can be used if items in the buffer. Otherwise check for channel closed.
+	//
+	// We recommend waiting on the future before re-opening in the same namespace.
+	// Otherwise, it could be magnitude slower as we have to fix the logs.
 	Receive(namespace Namespace, bufferSize BufferSize) (<-chan any, CloseFunc, error)
 
 	Close() Future
@@ -63,13 +66,13 @@ type Chan interface {
 //
 // Warning: Using a client wait should be used with caution because it could
 // block forever (e.g. servers crash). Set a timeout to avoid blocking forever.
-// 
-// The object must be sent through the channel
-// 
+//
+// # The object must be sent through the channel
+//
 // sending := WithWait(obj)
-// 
+//
 // chann <- sending
-// 
+//
 // <- sending.Done()
 func WithWait(obj any, ctx context.Context) WaitingSend {
 	objCtx, done := context.WithCancel(context.Background())
@@ -83,6 +86,15 @@ type channel struct {
 
 	ch       chan any
 	refCount int
+
+	// Once all the tasks (sender/receiver) the closeFunc synchronizes with
+	// finish, we can return the future result.
+	//
+	// e.g. wait for the sender to finish (send across gRPC or timeout) OR
+	// all receivers that are trying to push into the channel finish
+	//
+	// Ensure a buffer of size 1 to avoid race condition blocking.
+	closeCh chan struct{}
 
 	closed    bool
 	closeFunc CloseFunc
@@ -98,18 +110,19 @@ type rchannel struct {
 	// is done, we close the channel.
 	sendingCount atomic.Int32
 
-	// Once refCount reaches 0, we want to synchronize with the
-	// close goroutine to close the channel.
+	// Cond to wait for an rchannel to be deleted. Once deleted,
+	// this cond will be broadcasted.
 	//
-	// Ensure a buffer of 1 to avoid race condition blocking.
-	closeCh chan struct{}
-	ctx     context.Context
+	// Caller must hold the rmu lock.
+	delCond *sync.Cond
+
+	ctx context.Context
 }
 
 // externalChannel contains information about a server that is receiving this channel.
 // protected by the dchan.rcmu lock
 type externalChannel struct {
-	servers []ServerId
+	servers *orderedSet[ServerId]
 
 	// goroutines waiting for a receiver to send (synchronous channel)
 	//
@@ -130,11 +143,13 @@ type externalChannel struct {
 // dChan is a distributed channel that can be used to send and receive messages between nodes.
 // It is a wrapper around a map of dChanStreams, one for each namespace.
 type dChan struct {
+	// Server ID of this server.
+	id ServerId
 
 	// Servers that are receiving this channel (open for receiving).
 	// Used for senders to know which servers to send to.
 	// Updated via Raft FSM.
-	rcmu             sync.RWMutex
+	extmu            sync.RWMutex
 	externalChannels map[Namespace]*externalChannel
 
 	// channels (local sender) that are open for sending from Send(...)
@@ -172,15 +187,23 @@ func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any,
 	defer d.rmu.Unlock()
 
 	if chann, ok := d.receivers[namespace]; ok {
-		chann.refCount++
-		return chann.ch, chann.closeFunc, nil
+		if chann.closed {
+			chann.delCond.Wait()
+		} else {
+			chann.refCount++
+			return chann.ch, chann.closeFunc, nil
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	rchann := &rchannel{channel: *newChannel(namespace, bufferSize), ctx: ctx, closeCh: make(chan struct{})}
+	rchann := &rchannel{channel: *newChannel(namespace, bufferSize), ctx: ctx, delCond: sync.NewCond(&d.rmu)}
 	rchann.closeFunc = d.newReceiveCloseFunc(rchann, cancel, namespace)
 
 	d.receivers[namespace] = rchann
+
+	if err := d.registerReceiver(namespace).Wait(); err != nil {
+		return nil, nil, err
+	}
 
 	// Create a goroutine to receive messages from a gRPC stream.
 	// Send Raft message to add Receiver to the namespace.
@@ -190,12 +213,12 @@ func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any,
 func (d *dChan) Close() Future {
 	d.smu.Lock()
 	d.rmu.Lock()
-	d.rcmu.Lock()
-	defer d.rcmu.Unlock()
+	d.extmu.Lock()
+	defer d.extmu.Unlock()
 	defer d.rmu.Unlock()
 	defer d.smu.Unlock()
 
-	future := d.makeFuture()
+	future := newFuture()
 
 	// TODO: Close all channels and remove from senders and receivers.
 	f := d.raft.Shutdown()
@@ -209,22 +232,25 @@ func (d *dChan) Close() Future {
 // the channel
 func (d *dChan) newSendCloseFunc(chann *channel, namespace Namespace) CloseFunc {
 	return func() Future {
-		future := d.makeFuture()
+		future := newFuture()
 
 		go func() {
 			d.smu.Lock()
-			defer d.smu.Unlock()
-
 			chann.refCount--
 			if chann.refCount > 0 || chann.closed {
-				future <- nil
+				future.set(nil)
+				d.smu.Unlock()
 				return
 			}
 
-			delete(d.senders, namespace)
 			chann.closed = true
-			close(chann.ch)
-			future <- nil
+			delete(d.senders, namespace)
+			d.smu.Unlock() // Early unlock to not block for waiting receivers.
+
+			close(chann.ch) // notify the sender to finish
+
+			<-chann.closeCh // wait for it to finish
+			future.set(nil)
 		}()
 
 		return future
@@ -234,28 +260,45 @@ func (d *dChan) newSendCloseFunc(chann *channel, namespace Namespace) CloseFunc 
 // newReceiveCloseFunc creates a new close function for a receiver channel.
 // The close function synchronizes with the receiver goroutines to close
 // the channel
+//
+// We recommend waiting on the future before re-opening in the same namespace.
+// Otherwise, it could be magnitude slower as we have to fix the logs.
 func (d *dChan) newReceiveCloseFunc(rchann *rchannel, cancel context.CancelFunc, namespace Namespace) CloseFunc {
 	return func() Future {
-		future := d.makeFuture()
+		future := newFuture()
 		go func() {
 			d.rmu.Lock()
 			rchann.refCount--
 			if rchann.refCount > 0 || rchann.closed { // Receiver instances still exist
-				future <- nil
+				future.set(nil)
 				d.rmu.Unlock()
 				return
 			}
 
+			// Signal flag to new registers to this namespace to wait.
+			// Note: any messages still received will now return received: false
+			// unless someone re-registers but it'll be a different channel
 			rchann.closed = true
-
-			// Make sure this instance is deleted
-			//
-			// Note: atp the current receiver can never be read again since
-			// the reference was deleted with the lock.
-			delete(d.receivers, namespace)
 			d.rmu.Unlock() // Early unlock to not block for waiting senders.
 
-			cancel() // Cancel context to stop receiving messages.
+			// Even if there's a race e.g. we register again before we unregister,
+			// the local FSM will push another registerCommand to fix
+			unregisterFuture := d.unregisterReceiver(namespace, d.id)
+			if err := unregisterFuture.Wait(); err != nil {
+				future.set(err) // Maybe we should retry? Close should be idempotent.
+				return
+			}
+
+			// Cancel context to stop receiving messages this this channel.
+			// Placed after the unregister to give more time to receivers.
+			cancel()
+
+			// Two steps to not block other independent receivers from reigstering.
+			// New registers to this namespace will be blocked until this finishes.
+			d.rmu.Lock()
+			delete(d.receivers, namespace) // This instance is no longer valid.
+			rchann.delCond.Broadcast()     // Notify any waiters that the channel is deleted.
+			d.rmu.Unlock()
 
 			// Case 1: Senders exist, we wait until they finish and synchronize
 			// Case 2: No senders exist OR last sender already cancelled,
@@ -269,7 +312,7 @@ func (d *dChan) newReceiveCloseFunc(rchann *rchannel, cancel context.CancelFunc,
 			}
 
 			close(rchann.ch)
-			future <- nil
+			future.set(nil)
 		}()
 
 		return future
@@ -277,9 +320,17 @@ func (d *dChan) newReceiveCloseFunc(rchann *rchannel, cancel context.CancelFunc,
 }
 
 // newChannel creates a new channel with the given namespace and buffer size.
-// This function is used to create both sender and receiver channels.
+//
+// This function is used to for both sender and receiver channels.
+// Caller must set closeFunc otherwise it's nil
 func newChannel(namespace Namespace, bufferSize BufferSize) *channel {
-	return &channel{namespace: namespace, ch: make(chan any, bufferSize), refCount: 1, closed: false}
+	return &channel{
+		namespace: namespace,
+		ch:        make(chan any, bufferSize),
+		refCount:  1,
+		closeCh:   make(chan struct{}, 1),
+		closed:    false,
+	}
 }
 
 // getExternalChannel gets the external channel for the given namespace.
@@ -289,7 +340,7 @@ func newChannel(namespace Namespace, bufferSize BufferSize) *channel {
 func (d *dChan) getExternalChannel(namespace Namespace) *externalChannel {
 	if _, ok := d.externalChannels[namespace]; !ok {
 		d.externalChannels[namespace] = &externalChannel{
-			servers:   make([]ServerId, 0),
+			servers:   newOrderedSet[ServerId](),
 			waitQueue: make(chan struct{}),
 		}
 	}
@@ -297,11 +348,139 @@ func (d *dChan) getExternalChannel(namespace Namespace) *externalChannel {
 	return d.externalChannels[namespace]
 }
 
-func (d *dChan) makeFuture() chan error {
-	return make(chan error, 1)
+// Called from the FSM to register a receiver for a namespace.
+func (d *dChan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Future {
+	d.rmu.RLock() // Unlock after extmu or early return
+
+	// If the receiver exists then it's a local call or double registration.
+	// We can ignore it and safely return.
+	//
+	// Otherwise, we can assume it's an Apply after a restart
+	// and the receiver was not registered.
+	//
+	// We should send an unregisterReceiver command to clean up the receiver.
+	if serverId == d.id {
+		_, ok := d.receivers[namespace]
+		if !ok {
+			d.rmu.RUnlock()
+			return d.unregisterReceiver(namespace, serverId)
+		}
+	}
+
+	future := newFuture()
+
+	// Acquire the write lock to update externalChannel.servers
+	d.extmu.Lock()
+	d.rmu.Unlock()
+
+	externalChannel := d.getExternalChannel(namespace)
+	externalChannel.servers.put(serverId)
+
+	// Pass the baton if plausible
+	if externalChannel.waitCount.Load() > 0 {
+		externalChannel.waitQueue <- struct{}{}
+	} else {
+		d.extmu.Unlock()
+	}
+
+	future.set(nil)
+	return future
 }
 
-func newRaft() {
+// Called from the FSM to unregister a receiver for a namespace.
+func (d *dChan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, sender ServerId) Future {
+	d.rmu.RLock() // Unlock after extmu or early return
+
+	// call raftUnregisterReceiverCmd to unregister the receiver.
+	// Note: if the close is for this node, requested by another node
+	// (e.g. failed to send) then we should actually re-register the
+	// receiver if it's still up
+	if serverId == d.id && sender != serverId {
+		if _, ok := d.receivers[namespace]; ok {
+			d.rmu.RUnlock()
+			return d.registerReceiver(namespace)
+		}
+	}
+
+	d.extmu.Lock()
+	d.rmu.RUnlock()
+	defer d.extmu.Unlock()
+
+	future := newFuture()
+
+	externalChannel := d.getExternalChannel(namespace)
+	externalChannel.servers.delete(serverId)
+
+	future.set(nil)
+	return future
+}
+
+// Send a RegisterReceiver command to the Raft cluster.
+// to register a receiver for a namespace in this node.
+//
+// Note: the future returns the error of raft.Apply e.g.
+// ErrNotLeader, ErrLeadershipLost, etc.
+// or the error of the gRPC call.
+func (d *dChan) registerReceiver(namespace Namespace) Future {
+	future := newFuture()
+
+	go func() {
+		client, err := d.getLeaderClient()
+		if err != nil {
+			future.set(err)
+			return
+		}
+
+		_, err = client.RegisterReceiver(context.Background(), &p.ReceiverRequest{
+			Namespace: string(namespace),
+			ServerId:  string(d.id),
+			Requester: string(d.id),
+		})
+
+		future.set(err)
+	}()
+
+	return future
+}
+
+// Send a UnregisterReceiver command to the Raft cluster.
+// to unregister a receiver for a namespace in this node.
+//
+// Note: the future returns the error of raft.Apply e.g.
+// ErrNotLeader, ErrLeadershipLost, etc.
+// or the error of the gRPC call.
+func (d *dChan) unregisterReceiver(namespace Namespace, serverId ServerId) Future {
+	future := newFuture()
+
+	go func() {
+		client, err := d.getLeaderClient()
+		if err != nil {
+			future.set(err)
+			return
+		}
+
+		_, err = client.UnregisterReceiver(context.Background(), &p.ReceiverRequest{
+			Namespace: string(namespace),
+			ServerId:  string(serverId),
+			Requester: string(d.id),
+		})
+
+		future.set(err)
+	}()
+
+	return future
+}
+
+func (d *dChan) getLeaderClient() (p.DChanServiceClient, error) {
+	leader := d.raft.Leader()
+	conn, ok := d.tm.ConnectionManager().Hijack(raft.ServerAddress(leader))
+	if !ok {
+		return nil, errors.New("failed to hijack connection to leader")
+	}
+	return p.NewDChanServiceClient(conn), nil
+}
+
+func NewRaft() {
 	// https://github.com/Jille/raft-grpc-example/blob/master/main.go
 	// https://github.com/hashicorp/raft-boltdb
 	// https://github.com/hashicorp/raft

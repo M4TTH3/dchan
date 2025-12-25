@@ -9,6 +9,7 @@ package proto
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -22,6 +23,7 @@ const (
 )
 
 // ReceiveRequest contains Gob-encoded data to be decoded by the server
+// TODO: make it support chunking
 type ReceiveRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Data contains the Gob-encoded struct
@@ -121,18 +123,86 @@ func (x *ReceiveResponse) GetReceived() bool {
 	return false
 }
 
+// ReceiverRequest is used to register or unregister a receiver for a namespace.
+// It contains the namespace, the server ID of the receiver, and the requester.
+type ReceiverRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	ServerId      string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	Requester     string                 `protobuf:"bytes,3,opt,name=requester,proto3" json:"requester,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReceiverRequest) Reset() {
+	*x = ReceiverRequest{}
+	mi := &file_dchan_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReceiverRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReceiverRequest) ProtoMessage() {}
+
+func (x *ReceiverRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dchan_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReceiverRequest.ProtoReflect.Descriptor instead.
+func (*ReceiverRequest) Descriptor() ([]byte, []int) {
+	return file_dchan_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ReceiverRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *ReceiverRequest) GetServerId() string {
+	if x != nil {
+		return x.ServerId
+	}
+	return ""
+}
+
+func (x *ReceiverRequest) GetRequester() string {
+	if x != nil {
+		return x.Requester
+	}
+	return ""
+}
+
 var File_dchan_proto protoreflect.FileDescriptor
 
 const file_dchan_proto_rawDesc = "" +
 	"\n" +
-	"\vdchan.proto\x12\x05dchan\"B\n" +
+	"\vdchan.proto\x12\x05dchan\x1a\x1bgoogle/protobuf/empty.proto\"B\n" +
 	"\x0eReceiveRequest\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\"-\n" +
 	"\x0fReceiveResponse\x12\x1a\n" +
-	"\breceived\x18\x01 \x01(\bR\breceived2H\n" +
+	"\breceived\x18\x01 \x01(\bR\breceived\"j\n" +
+	"\x0fReceiverRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1b\n" +
+	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x1c\n" +
+	"\trequester\x18\x03 \x01(\tR\trequester2\xd2\x01\n" +
 	"\fDChanService\x128\n" +
-	"\aReceive\x12\x15.dchan.ReceiveRequest\x1a\x16.dchan.ReceiveResponseB\x1fZ\x1dgithub.com/m4tth3/dchan/protob\x06proto3"
+	"\aReceive\x12\x15.dchan.ReceiveRequest\x1a\x16.dchan.ReceiveResponse\x12B\n" +
+	"\x10RegisterReceiver\x12\x16.dchan.ReceiverRequest\x1a\x16.google.protobuf.Empty\x12D\n" +
+	"\x12UnregisterReceiver\x12\x16.dchan.ReceiverRequest\x1a\x16.google.protobuf.EmptyB\x1fZ\x1dgithub.com/m4tth3/dchan/protob\x06proto3"
 
 var (
 	file_dchan_proto_rawDescOnce sync.Once
@@ -146,16 +216,22 @@ func file_dchan_proto_rawDescGZIP() []byte {
 	return file_dchan_proto_rawDescData
 }
 
-var file_dchan_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_dchan_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_dchan_proto_goTypes = []any{
 	(*ReceiveRequest)(nil),  // 0: dchan.ReceiveRequest
 	(*ReceiveResponse)(nil), // 1: dchan.ReceiveResponse
+	(*ReceiverRequest)(nil), // 2: dchan.ReceiverRequest
+	(*emptypb.Empty)(nil),   // 3: google.protobuf.Empty
 }
 var file_dchan_proto_depIdxs = []int32{
 	0, // 0: dchan.DChanService.Receive:input_type -> dchan.ReceiveRequest
-	1, // 1: dchan.DChanService.Receive:output_type -> dchan.ReceiveResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	2, // 1: dchan.DChanService.RegisterReceiver:input_type -> dchan.ReceiverRequest
+	2, // 2: dchan.DChanService.UnregisterReceiver:input_type -> dchan.ReceiverRequest
+	1, // 3: dchan.DChanService.Receive:output_type -> dchan.ReceiveResponse
+	3, // 4: dchan.DChanService.RegisterReceiver:output_type -> google.protobuf.Empty
+	3, // 5: dchan.DChanService.UnregisterReceiver:output_type -> google.protobuf.Empty
+	3, // [3:6] is the sub-list for method output_type
+	0, // [0:3] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -172,7 +248,7 @@ func file_dchan_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dchan_proto_rawDesc), len(file_dchan_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -19,7 +20,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DChanService_Receive_FullMethodName = "/dchan.DChanService/Receive"
+	DChanService_Receive_FullMethodName            = "/dchan.DChanService/Receive"
+	DChanService_RegisterReceiver_FullMethodName   = "/dchan.DChanService/RegisterReceiver"
+	DChanService_UnregisterReceiver_FullMethodName = "/dchan.DChanService/UnregisterReceiver"
 )
 
 // DChanServiceClient is the client API for DChanService service.
@@ -30,6 +33,8 @@ const (
 type DChanServiceClient interface {
 	// Receive accepts Gob-encoded data for the server to decode
 	Receive(ctx context.Context, in *ReceiveRequest, opts ...grpc.CallOption) (*ReceiveResponse, error)
+	RegisterReceiver(ctx context.Context, in *ReceiverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	UnregisterReceiver(ctx context.Context, in *ReceiverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type dChanServiceClient struct {
@@ -50,6 +55,26 @@ func (c *dChanServiceClient) Receive(ctx context.Context, in *ReceiveRequest, op
 	return out, nil
 }
 
+func (c *dChanServiceClient) RegisterReceiver(ctx context.Context, in *ReceiverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, DChanService_RegisterReceiver_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dChanServiceClient) UnregisterReceiver(ctx context.Context, in *ReceiverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, DChanService_UnregisterReceiver_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DChanServiceServer is the server API for DChanService service.
 // All implementations must embed UnimplementedDChanServiceServer
 // for forward compatibility.
@@ -58,6 +83,8 @@ func (c *dChanServiceClient) Receive(ctx context.Context, in *ReceiveRequest, op
 type DChanServiceServer interface {
 	// Receive accepts Gob-encoded data for the server to decode
 	Receive(context.Context, *ReceiveRequest) (*ReceiveResponse, error)
+	RegisterReceiver(context.Context, *ReceiverRequest) (*emptypb.Empty, error)
+	UnregisterReceiver(context.Context, *ReceiverRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedDChanServiceServer()
 }
 
@@ -70,6 +97,12 @@ type UnimplementedDChanServiceServer struct{}
 
 func (UnimplementedDChanServiceServer) Receive(context.Context, *ReceiveRequest) (*ReceiveResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Receive not implemented")
+}
+func (UnimplementedDChanServiceServer) RegisterReceiver(context.Context, *ReceiverRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegisterReceiver not implemented")
+}
+func (UnimplementedDChanServiceServer) UnregisterReceiver(context.Context, *ReceiverRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UnregisterReceiver not implemented")
 }
 func (UnimplementedDChanServiceServer) mustEmbedUnimplementedDChanServiceServer() {}
 func (UnimplementedDChanServiceServer) testEmbeddedByValue()                      {}
@@ -110,6 +143,42 @@ func _DChanService_Receive_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DChanService_RegisterReceiver_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReceiverRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DChanServiceServer).RegisterReceiver(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DChanService_RegisterReceiver_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DChanServiceServer).RegisterReceiver(ctx, req.(*ReceiverRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DChanService_UnregisterReceiver_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReceiverRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DChanServiceServer).UnregisterReceiver(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DChanService_UnregisterReceiver_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DChanServiceServer).UnregisterReceiver(ctx, req.(*ReceiverRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DChanService_ServiceDesc is the grpc.ServiceDesc for DChanService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -120,6 +189,14 @@ var DChanService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Receive",
 			Handler:    _DChanService_Receive_Handler,
+		},
+		{
+			MethodName: "RegisterReceiver",
+			Handler:    _DChanService_RegisterReceiver_Handler,
+		},
+		{
+			MethodName: "UnregisterReceiver",
+			Handler:    _DChanService_UnregisterReceiver_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

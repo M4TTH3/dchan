@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	p "github.com/m4tth3/dchan/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 var (
@@ -21,18 +22,19 @@ type receiver struct {
 
 var _ p.DChanServiceServer = &receiver{}
 
-func (g receiver) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveResponse, error) {
+// TODO: make this support chunking instead
+func (r receiver) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveResponse, error) {
 	namespace := Namespace(req.GetNamespace())
 	data := req.GetData()
 
-	g.dchan.rmu.RLock()
-	receiver, ok := g.dchan.receivers[namespace]; if !ok {
-		g.dchan.rmu.RUnlock()
+	r.dchan.rmu.RLock()
+	receiver, ok := r.dchan.receivers[namespace]; if !ok || receiver.closed {
+		r.dchan.rmu.RUnlock()
 		return &p.ReceiveResponse{Received: false}, nil
 	}
 
 	receiver.sendingCount.Add(1)
-	g.dchan.rmu.RUnlock()
+	r.dchan.rmu.RUnlock()
 
 	var v any
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&v); err != nil {
@@ -57,4 +59,47 @@ func (g receiver) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.Receiv
 	receiver.sendingCount.Add(-1)
 
 	return &p.ReceiveResponse{Received: true}, nil
+}
+
+func (r receiver) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
+	cmd := fsmCmd{
+		Type: registerReceiver,
+		Namespace: Namespace(req.GetNamespace()),
+		ServerId: ServerId(req.GetServerId()),
+		Requester: ServerId(req.GetRequester()),
+	}
+
+	encodedCmd, err := encodeFsmCmd(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	future := r.dchan.raft.Apply(encodedCmd, 0)
+	if err := future.Error(); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (r receiver) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
+	cmd := fsmCmd{
+		Type: unregisterReceiver,
+		Namespace: Namespace(req.GetNamespace()),
+		ServerId: ServerId(req.GetServerId()),
+		Requester: ServerId(req.GetRequester()),
+	}
+
+	encodedCmd, err := encodeFsmCmd(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	future := r.dchan.raft.Apply(encodedCmd, 0)
+	// Block until the command is applied.
+	if err := future.Error(); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
 }
