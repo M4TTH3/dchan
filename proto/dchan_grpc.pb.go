@@ -23,6 +23,8 @@ const (
 	DChanService_Receive_FullMethodName            = "/dchan.DChanService/Receive"
 	DChanService_RegisterReceiver_FullMethodName   = "/dchan.DChanService/RegisterReceiver"
 	DChanService_UnregisterReceiver_FullMethodName = "/dchan.DChanService/UnregisterReceiver"
+	DChanService_AddVoter_FullMethodName           = "/dchan.DChanService/AddVoter"
+	DChanService_RemoveVoter_FullMethodName        = "/dchan.DChanService/RemoveVoter"
 )
 
 // DChanServiceClient is the client API for DChanService service.
@@ -35,6 +37,8 @@ type DChanServiceClient interface {
 	Receive(ctx context.Context, in *ReceiveRequest, opts ...grpc.CallOption) (*ReceiveResponse, error)
 	RegisterReceiver(ctx context.Context, in *ReceiverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	UnregisterReceiver(ctx context.Context, in *ReceiverRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	AddVoter(ctx context.Context, in *ServerInfo, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	RemoveVoter(ctx context.Context, in *ServerInfo, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type dChanServiceClient struct {
@@ -75,6 +79,26 @@ func (c *dChanServiceClient) UnregisterReceiver(ctx context.Context, in *Receive
 	return out, nil
 }
 
+func (c *dChanServiceClient) AddVoter(ctx context.Context, in *ServerInfo, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, DChanService_AddVoter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dChanServiceClient) RemoveVoter(ctx context.Context, in *ServerInfo, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, DChanService_RemoveVoter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DChanServiceServer is the server API for DChanService service.
 // All implementations must embed UnimplementedDChanServiceServer
 // for forward compatibility.
@@ -85,6 +109,8 @@ type DChanServiceServer interface {
 	Receive(context.Context, *ReceiveRequest) (*ReceiveResponse, error)
 	RegisterReceiver(context.Context, *ReceiverRequest) (*emptypb.Empty, error)
 	UnregisterReceiver(context.Context, *ReceiverRequest) (*emptypb.Empty, error)
+	AddVoter(context.Context, *ServerInfo) (*emptypb.Empty, error)
+	RemoveVoter(context.Context, *ServerInfo) (*emptypb.Empty, error)
 	mustEmbedUnimplementedDChanServiceServer()
 }
 
@@ -103,6 +129,12 @@ func (UnimplementedDChanServiceServer) RegisterReceiver(context.Context, *Receiv
 }
 func (UnimplementedDChanServiceServer) UnregisterReceiver(context.Context, *ReceiverRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UnregisterReceiver not implemented")
+}
+func (UnimplementedDChanServiceServer) AddVoter(context.Context, *ServerInfo) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AddVoter not implemented")
+}
+func (UnimplementedDChanServiceServer) RemoveVoter(context.Context, *ServerInfo) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RemoveVoter not implemented")
 }
 func (UnimplementedDChanServiceServer) mustEmbedUnimplementedDChanServiceServer() {}
 func (UnimplementedDChanServiceServer) testEmbeddedByValue()                      {}
@@ -179,6 +211,42 @@ func _DChanService_UnregisterReceiver_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DChanService_AddVoter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ServerInfo)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DChanServiceServer).AddVoter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DChanService_AddVoter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DChanServiceServer).AddVoter(ctx, req.(*ServerInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DChanService_RemoveVoter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ServerInfo)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DChanServiceServer).RemoveVoter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DChanService_RemoveVoter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DChanServiceServer).RemoveVoter(ctx, req.(*ServerInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DChanService_ServiceDesc is the grpc.ServiceDesc for DChanService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -197,6 +265,14 @@ var DChanService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UnregisterReceiver",
 			Handler:    _DChanService_UnregisterReceiver_Handler,
+		},
+		{
+			MethodName: "AddVoter",
+			Handler:    _DChanService_AddVoter_Handler,
+		},
+		{
+			MethodName: "RemoveVoter",
+			Handler:    _DChanService_RemoveVoter_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

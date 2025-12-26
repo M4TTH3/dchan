@@ -13,6 +13,9 @@ import (
 
 var (
 	errCloseErr = errors.New("error closing connections")
+
+	DefaultStreamTimeout = 4 * time.Minute
+	DefaultSendTimeout = 1 * time.Minute
 )
 
 type Manager struct {
@@ -27,6 +30,14 @@ type Manager struct {
 	shutdownCh   chan struct{}
 	shutdownLock sync.Mutex
 
+	// Timeout for streaming operations
+	// Default to 4 minutes.
+	streamTimeout time.Duration
+
+	// Timeout for regular calls
+	// Default to 1 minute.
+	sendTimeout time.Duration
+
 	cm ConnectionManager
 }
 
@@ -37,6 +48,8 @@ func New(localAddress raft.ServerAddress, dialOptions []grpc.DialOption, options
 
 		rpcChan:    make(chan raft.RPC),
 		shutdownCh: make(chan struct{}),
+		streamTimeout: DefaultStreamTimeout,
+		sendTimeout: DefaultSendTimeout,
 
 		cm: NewConnectionManager(dialOptions...),
 	}
@@ -54,7 +67,7 @@ func (m *Manager) Register(s grpc.ServiceRegistrar) {
 }
 
 func (m *Manager) Transport() raft.Transport {
-	return &transport{manager: m}
+	return &transport{manager: m, streamTimeout: m.streamTimeout, sendTimeout: m.sendTimeout}
 }
 
 func (m *Manager) ConnectionManager() ConnectionManager {

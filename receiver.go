@@ -6,6 +6,7 @@ import (
 	"encoding/gob"
 	"errors"
 
+	"github.com/hashicorp/raft"
 	p "github.com/m4tth3/dchan/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -14,16 +15,16 @@ var (
 	ErrNoLongerReceiving = errors.New("no longer receiving")
 )
 
-type receiver struct {
+type server struct {
 	dchan *dChan
 
 	p.UnsafeDChanServiceServer // Ensure compilation
 }
 
-var _ p.DChanServiceServer = &receiver{}
+var _ p.DChanServiceServer = &server{}
 
 // TODO: make this support chunking instead
-func (r receiver) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveResponse, error) {
+func (r server) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveResponse, error) {
 	namespace := Namespace(req.GetNamespace())
 	data := req.GetData()
 
@@ -61,7 +62,7 @@ func (r receiver) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.Receiv
 	return &p.ReceiveResponse{Received: true}, nil
 }
 
-func (r receiver) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
+func (r server) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
 	cmd := fsmCmd{
 		Type: registerReceiver,
 		Namespace: Namespace(req.GetNamespace()),
@@ -82,7 +83,7 @@ func (r receiver) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) 
 	return &emptypb.Empty{}, nil
 }
 
-func (r receiver) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
+func (r server) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
 	cmd := fsmCmd{
 		Type: unregisterReceiver,
 		Namespace: Namespace(req.GetNamespace()),
@@ -97,6 +98,47 @@ func (r receiver) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest
 
 	future := r.dchan.raft.Apply(encodedCmd, 0)
 	// Block until the command is applied.
+	if err := future.Error(); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (r server) AddVoter(ctx context.Context, req *p.ServerInfo) (*emptypb.Empty, error) {
+	if r.dchan.raft.State() != raft.Leader {
+		if leader, err := r.dchan.getLeaderClient(); err != nil {
+			return nil, err
+		} else {
+			// Forward the request to the leader.
+			return leader.AddVoter(ctx, req)
+		}
+	}
+
+	id := raft.ServerID(req.GetIdAddress())
+	address := raft.ServerAddress(req.GetIdAddress())
+
+	future := r.dchan.raft.AddVoter(id, address, 0, 0)
+	if err := future.Error(); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (r server) RemoveVoter(ctx context.Context, req *p.ServerInfo) (*emptypb.Empty, error) {
+	if r.dchan.raft.State() != raft.Leader {
+		if leader, err := r.dchan.getLeaderClient(); err != nil {
+			return nil, err
+		} else {
+			// Forward the request to the leader.
+			return leader.RemoveVoter(ctx, req)
+		}
+	}
+
+	id := raft.ServerID(req.GetIdAddress())
+
+	future := r.dchan.raft.RemoveServer(id, 0, 0)
 	if err := future.Error(); err != nil {
 		return nil, err
 	}

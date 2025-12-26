@@ -11,3 +11,15 @@ func WithHeartbeatTimeout(d time.Duration) Option {
 		m.heartbeatTimeout = d
 	}
 }
+
+func WithStreamTimeout(d time.Duration) Option {
+	return func(m *Manager) {
+		m.streamTimeout = d
+	}
+}
+
+func WithSendTimeout(d time.Duration) Option {
+	return func(m *Manager) {
+		m.sendTimeout = d
+	}
+}

@@ -14,6 +14,9 @@ import (
 
 type transport struct {
 	manager *Manager
+
+	streamTimeout time.Duration // Timeout for streaming operations
+	sendTimeout time.Duration // Timeout for regular calls
 }
 
 var _ raft.Transport = transport{}
@@ -48,12 +51,18 @@ func (r transport) AppendEntries(id raft.ServerID, target raft.ServerAddress, ar
 	if err != nil {
 		return err
 	}
-	ctx := context.TODO()
+
+	var ctx context.Context
+	var cancel context.CancelFunc
+
 	if r.manager.heartbeatTimeout > 0 && isHeartbeat(args) {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.manager.heartbeatTimeout)
 		defer cancel()
+	} else {
+		ctx, cancel = r.sendContext()
+		defer cancel()
 	}
+
 	ret, err := c.AppendEntries(ctx, encodeAppendEntriesRequest(args))
 	if err != nil {
 		return err
@@ -64,11 +73,13 @@ func (r transport) AppendEntries(id raft.ServerID, target raft.ServerAddress, ar
 
 // RequestVote sends the appropriate RPC to the target node.
 func (r transport) RequestVote(id raft.ServerID, target raft.ServerAddress, args *raft.RequestVoteRequest, resp *raft.RequestVoteResponse) error {
-	c, err := r.getPeer(target)
+	c, err := r.getPeer(target);
 	if err != nil {
 		return err
 	}
-	ret, err := c.RequestVote(context.TODO(), encodeRequestVoteRequest(args))
+	ctx, cancel := r.sendContext()
+	defer cancel()
+	ret, err := c.RequestVote(ctx, encodeRequestVoteRequest(args))
 	if err != nil {
 		return err
 	}
@@ -82,7 +93,9 @@ func (r transport) TimeoutNow(id raft.ServerID, target raft.ServerAddress, args 
 	if err != nil {
 		return err
 	}
-	ret, err := c.TimeoutNow(context.TODO(), encodeTimeoutNowRequest(args))
+	ctx, cancel := r.sendContext()
+	defer cancel()
+	ret, err := c.TimeoutNow(ctx, encodeTimeoutNowRequest(args))
 	if err != nil {
 		return err
 	}
@@ -96,7 +109,9 @@ func (r transport) RequestPreVote(id raft.ServerID, target raft.ServerAddress, a
 	if err != nil {
 		return err
 	}
-	ret, err := c.RequestPreVote(context.TODO(), encodeRequestPreVoteRequest(args))
+	ctx, cancel := r.sendContext()
+	defer cancel()
+	ret, err := c.RequestPreVote(ctx, encodeRequestPreVoteRequest(args))
 	if err != nil {
 		return err
 	}
@@ -111,7 +126,9 @@ func (r transport) InstallSnapshot(id raft.ServerID, target raft.ServerAddress, 
 	if err != nil {
 		return err
 	}
-	stream, err := c.InstallSnapshot(context.TODO())
+	ctx, cancel := r.streamContext()
+	defer cancel()
+	stream, err := c.InstallSnapshot(ctx)
 	if err != nil {
 		return err
 	}
@@ -148,8 +165,7 @@ func (r transport) AppendEntriesPipeline(id raft.ServerID, target raft.ServerAdd
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.TODO()
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := r.streamContext()
 	stream, err := c.AppendEntriesPipeline(ctx)
 	if err != nil {
 		cancel()
@@ -296,4 +312,26 @@ func (r transport) Disconnect(target raft.ServerAddress) {
 
 func (r transport) DisconnectAll() {
 	r.manager.cm.DisconnectAll()
+}
+
+func (r transport) sendContext() (context.Context, context.CancelFunc) {
+	ctx := context.Background()
+	if r.sendTimeout > 0 {
+		ctx, cancel := context.WithTimeout(ctx, r.sendTimeout)
+
+		return ctx, cancel
+	}
+
+	return ctx, func() {}
+}
+
+func (r transport) streamContext() (context.Context, context.CancelFunc) {
+	ctx := context.Background()
+	if r.streamTimeout > 0 {
+		ctx, cancel := context.WithTimeout(ctx, r.streamTimeout)
+
+		return ctx, cancel
+	}
+
+	return ctx, func() {}
 }

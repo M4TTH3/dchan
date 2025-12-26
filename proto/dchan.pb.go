@@ -125,6 +125,8 @@ func (x *ReceiveResponse) GetReceived() bool {
 
 // ReceiverRequest is used to register or unregister a receiver for a namespace.
 // It contains the namespace, the server ID of the receiver, and the requester.
+//
+// This is sent to the leader to register or unregister a receiver.
 type ReceiverRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
@@ -185,6 +187,54 @@ func (x *ReceiverRequest) GetRequester() string {
 	return ""
 }
 
+// ServerInfo is used to add or remove a voter from the cluster.
+//
+// We don't need a timeout as we want to block for a reasonable time until the
+// operation is complete.
+type ServerInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IdAddress     string                 `protobuf:"bytes,1,opt,name=id_address,json=idAddress,proto3" json:"id_address,omitempty"` // The ID and address of the server to add or remove.
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerInfo) Reset() {
+	*x = ServerInfo{}
+	mi := &file_dchan_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerInfo) ProtoMessage() {}
+
+func (x *ServerInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_dchan_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerInfo.ProtoReflect.Descriptor instead.
+func (*ServerInfo) Descriptor() ([]byte, []int) {
+	return file_dchan_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ServerInfo) GetIdAddress() string {
+	if x != nil {
+		return x.IdAddress
+	}
+	return ""
+}
+
 var File_dchan_proto protoreflect.FileDescriptor
 
 const file_dchan_proto_rawDesc = "" +
@@ -198,11 +248,17 @@ const file_dchan_proto_rawDesc = "" +
 	"\x0fReceiverRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x1c\n" +
-	"\trequester\x18\x03 \x01(\tR\trequester2\xd2\x01\n" +
+	"\trequester\x18\x03 \x01(\tR\trequester\"+\n" +
+	"\n" +
+	"ServerInfo\x12\x1d\n" +
+	"\n" +
+	"id_address\x18\x01 \x01(\tR\tidAddress2\xc3\x02\n" +
 	"\fDChanService\x128\n" +
 	"\aReceive\x12\x15.dchan.ReceiveRequest\x1a\x16.dchan.ReceiveResponse\x12B\n" +
 	"\x10RegisterReceiver\x12\x16.dchan.ReceiverRequest\x1a\x16.google.protobuf.Empty\x12D\n" +
-	"\x12UnregisterReceiver\x12\x16.dchan.ReceiverRequest\x1a\x16.google.protobuf.EmptyB\x1fZ\x1dgithub.com/m4tth3/dchan/protob\x06proto3"
+	"\x12UnregisterReceiver\x12\x16.dchan.ReceiverRequest\x1a\x16.google.protobuf.Empty\x125\n" +
+	"\bAddVoter\x12\x11.dchan.ServerInfo\x1a\x16.google.protobuf.Empty\x128\n" +
+	"\vRemoveVoter\x12\x11.dchan.ServerInfo\x1a\x16.google.protobuf.EmptyB\x1fZ\x1dgithub.com/m4tth3/dchan/protob\x06proto3"
 
 var (
 	file_dchan_proto_rawDescOnce sync.Once
@@ -216,22 +272,27 @@ func file_dchan_proto_rawDescGZIP() []byte {
 	return file_dchan_proto_rawDescData
 }
 
-var file_dchan_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_dchan_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_dchan_proto_goTypes = []any{
 	(*ReceiveRequest)(nil),  // 0: dchan.ReceiveRequest
 	(*ReceiveResponse)(nil), // 1: dchan.ReceiveResponse
 	(*ReceiverRequest)(nil), // 2: dchan.ReceiverRequest
-	(*emptypb.Empty)(nil),   // 3: google.protobuf.Empty
+	(*ServerInfo)(nil),      // 3: dchan.ServerInfo
+	(*emptypb.Empty)(nil),   // 4: google.protobuf.Empty
 }
 var file_dchan_proto_depIdxs = []int32{
 	0, // 0: dchan.DChanService.Receive:input_type -> dchan.ReceiveRequest
 	2, // 1: dchan.DChanService.RegisterReceiver:input_type -> dchan.ReceiverRequest
 	2, // 2: dchan.DChanService.UnregisterReceiver:input_type -> dchan.ReceiverRequest
-	1, // 3: dchan.DChanService.Receive:output_type -> dchan.ReceiveResponse
-	3, // 4: dchan.DChanService.RegisterReceiver:output_type -> google.protobuf.Empty
-	3, // 5: dchan.DChanService.UnregisterReceiver:output_type -> google.protobuf.Empty
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
+	3, // 3: dchan.DChanService.AddVoter:input_type -> dchan.ServerInfo
+	3, // 4: dchan.DChanService.RemoveVoter:input_type -> dchan.ServerInfo
+	1, // 5: dchan.DChanService.Receive:output_type -> dchan.ReceiveResponse
+	4, // 6: dchan.DChanService.RegisterReceiver:output_type -> google.protobuf.Empty
+	4, // 7: dchan.DChanService.UnregisterReceiver:output_type -> google.protobuf.Empty
+	4, // 8: dchan.DChanService.AddVoter:output_type -> google.protobuf.Empty
+	4, // 9: dchan.DChanService.RemoveVoter:output_type -> google.protobuf.Empty
+	5, // [5:10] is the sub-list for method output_type
+	0, // [0:5] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -248,7 +309,7 @@ func file_dchan_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dchan_proto_rawDesc), len(file_dchan_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

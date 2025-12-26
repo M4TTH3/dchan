@@ -31,6 +31,9 @@ type CustomEncodable interface {
 
 // Chan is the interface for a distributed channel that can be used to send and receive messages between nodes.
 // Note: it only works with exported fields (unexported fields are ignored).
+//
+// Future optimization:
+// - Start as a non-voter and upgrade to a voter if we start receiving messages. Idk if this is worth it tbh.
 type Chan interface {
 	// Send returns a channel that can be used to send messages to the distributed channel.
 	// Explicitly run CloseFunc when the channel is no longer needed.
@@ -59,22 +62,25 @@ type Chan interface {
 	Close() Future
 }
 
-// WithWait creates a new WaitingSend object that can be used to send a message with a wait
-// until the message is sent. The context is the time to send a message.
-//
-// Warning: Using a client wait should be used with caution because it could
-// block forever (e.g. servers crash). Set a timeout to avoid blocking forever.
-//
-// # The object must be sent through the channel
-//
-// sending := WithWait(obj)
-//
-// chann <- sending
-//
-// <- sending.Done()
-func WithWait(obj any, ctx context.Context) WaitingSend {
-	objCtx, done := context.WithCancel(context.Background())
-	return WaitingSend{value: obj, sendCtx: ctx, ctx: objCtx, done: done}
+// New creates a new dChan with the given address, session ID, cluster addresses, and options.
+// The address is the address of this server.
+// The session ID is the session ID of this server.
+// The cluster addresses are the addresses of initial cluster members (e.g. possibly itself).
+// The options are the options for the dChan.
+func New(addr string, sessionId string, clusterAddr []string, options ...Option) (Chan, error) {
+	server := grpc.NewServer()
+
+	d := &dChan{
+		server: server,
+	}
+
+	for _, option := range options {
+		if err := option(d); err != nil {
+			return nil, err
+		}
+	}
+
+	return d, nil
 }
 
 // channel contains local chan that tracks reference counts
@@ -141,8 +147,7 @@ type externalChannel struct {
 // dChan is a distributed channel that can be used to send and receive messages between nodes.
 // It is a wrapper around a map of dChanStreams, one for each namespace.
 type dChan struct {
-	// Server ID of this server.
-	id ServerId
+	Config
 
 	// Servers that are receiving this namespace (open for receiving).
 	// Used for senders to know which servers to send to (round-robin).
@@ -158,8 +163,9 @@ type dChan struct {
 	rmu       sync.RWMutex
 	receivers map[Namespace]*rchannel
 
-	tm   *transport.Manager
-	raft *raft.Raft
+	tm     *transport.Manager
+	server *grpc.Server
+	raft   *raft.Raft
 }
 
 var _ Chan = &dChan{}
@@ -258,7 +264,7 @@ func (d *dChan) newSendCloseFunc(chann *channel, namespace Namespace) CloseFunc 
 }
 
 // newReceiveCloseFunc creates a new close function for a receiver channel.
-// The close function synchronizes with the receiver goroutines to close
+// The close function synchronizes with the server.Receive goroutines to close
 // the channel
 //
 // We recommend waiting on the future before re-opening in the same namespace.
@@ -283,7 +289,7 @@ func (d *dChan) newReceiveCloseFunc(rchann *rchannel, cancel context.CancelFunc,
 
 			// Even if there's a race e.g. we register again before we unregister,
 			// the local FSM will push another registerCommand to fix
-			unregisterFuture := d.unregisterReceiver(namespace, d.id)
+			unregisterFuture := d.unregisterReceiver(namespace, d.Id)
 			if err := unregisterFuture.Wait(); err != nil {
 				future.set(err) // Maybe we should retry? Close should be idempotent.
 				return
@@ -359,7 +365,7 @@ func (d *dChan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Futu
 	// and the receiver was not registered.
 	//
 	// We should send an unregisterReceiver command to clean up the receiver.
-	if serverId == d.id {
+	if serverId == d.Id {
 		_, ok := d.receivers[namespace]
 		if !ok {
 			d.rmu.RUnlock()
@@ -395,7 +401,7 @@ func (d *dChan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, se
 	// Note: if the close is for this node, requested by another node
 	// (e.g. failed to send) then we should actually re-register the
 	// receiver if it's still up
-	if serverId == d.id && sender != serverId {
+	if serverId == d.Id && sender != serverId {
 		if receiver, ok := d.receivers[namespace]; ok && !receiver.closed {
 			d.rmu.RUnlock()
 			return d.registerReceiver(namespace)
@@ -434,11 +440,14 @@ func (d *dChan) fsmGetState() map[Namespace][]ServerId {
 //
 // This function should match receiver state with the saved state of the server
 // when this server is in the list.
-// 
+//
 // Case 1: receiver exists (and not closed) and that namespace isn't in external channel.
-//    then register the receiver. We can ignore this as the snapshot is behind.
+//
+//	then register the receiver. We can ignore this as the snapshot is behind.
+//
 // Case 2: namespace is in external channel but receiver doesn't exist,
-//    then unregister the receiver.
+//
+//	then unregister the receiver.
 //
 // We should be modifying externalChannels rather than replacing if it exists already.
 //
@@ -463,13 +472,13 @@ func (d *dChan) fsmRestore(state map[Namespace][]ServerId) error {
 		externalChannel.servers = newOrderedSetFromSlice(servers)
 
 		// Proceed if there's no local receiver check
-		if !externalChannel.servers.has(d.id) {
+		if !externalChannel.servers.has(d.Id) {
 			continue
 		}
 
 		// If the local receiver is not open, we should unregister it.
 		if _, ok := d.receivers[namespace]; !ok {
-			if err := d.unregisterReceiver(namespace, d.id).Wait(); err != nil {
+			if err := d.unregisterReceiver(namespace, d.Id).Wait(); err != nil {
 				return err
 			}
 		}
@@ -494,10 +503,12 @@ func (d *dChan) registerReceiver(namespace Namespace) Future {
 			return
 		}
 
-		_, err = client.RegisterReceiver(context.Background(), &p.ReceiverRequest{
+		ctx, cancel := d.clusterCtx()
+		defer cancel()
+		_, err = client.RegisterReceiver(ctx, &p.ReceiverRequest{
 			Namespace: string(namespace),
-			ServerId:  string(d.id),
-			Requester: string(d.id),
+			ServerId:  string(d.Id),
+			Requester: string(d.Id),
 		})
 
 		future.set(err)
@@ -522,10 +533,62 @@ func (d *dChan) unregisterReceiver(namespace Namespace, serverId ServerId) Futur
 			return
 		}
 
-		_, err = client.UnregisterReceiver(context.Background(), &p.ReceiverRequest{
+		ctx, cancel := d.clusterCtx()
+		defer cancel()
+		_, err = client.UnregisterReceiver(ctx, &p.ReceiverRequest{
 			Namespace: string(namespace),
 			ServerId:  string(serverId),
-			Requester: string(d.id),
+			Requester: string(d.Id),
+		})
+
+		future.set(err)
+	}()
+
+	return future
+}
+
+// Send a AddVoter command to the Raft cluster.
+// to add a voter to the cluster.
+//
+// Note: the future returns the error of raft.Apply e.g.
+// ErrNotLeader, ErrLeadershipLost, etc.
+// or the error of the gRPC call.
+func (d *dChan) registerAsVoter() Future {
+	future := newFuture()
+
+	go func() {
+		client, err := d.getLeaderClient()
+		if err != nil {
+			future.set(err)
+			return
+		}
+
+		ctx, cancel := d.clusterCtx()
+		defer cancel()
+		_, err = client.AddVoter(ctx, &p.ServerInfo{
+			IdAddress: string(d.Id),
+		})
+
+		future.set(err)
+	}()
+
+	return future
+}
+
+func (d *dChan) unregisterAsVoter() Future {
+	future := newFuture()
+
+	go func() {
+		client, err := d.getLeaderClient()
+		if err != nil {
+			future.set(err)
+			return
+		}
+
+		ctx, cancel := d.clusterCtx()
+		defer cancel()
+		_, err = client.RemoveVoter(ctx, &p.ServerInfo{
+			IdAddress: string(d.Id),
 		})
 
 		future.set(err)
@@ -536,10 +599,11 @@ func (d *dChan) unregisterReceiver(namespace Namespace, serverId ServerId) Futur
 
 func (d *dChan) getLeaderClient() (p.DChanServiceClient, error) {
 	leader := d.raft.Leader()
-	conn, ok := d.tm.ConnectionManager().Hijack(raft.ServerAddress(leader))
-	if !ok {
-		return nil, errors.New("failed to hijack connection to leader")
+	conn, err := d.tm.ConnectionManager().Register(raft.ServerAddress(leader))
+	if err != nil {
+		return nil, err
 	}
+
 	return p.NewDChanServiceClient(conn), nil
 }
 

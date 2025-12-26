@@ -30,6 +30,14 @@ message ReceiverRequest {
   string requester = 3;
 }
 
+// ServerInfo is used to add or remove a voter from the cluster.
+//
+// We don't need a timeout as we want to block for a reasonable time until the
+// operation is complete.
+message ServerInfo {
+  string id_address = 1; // The ID and address of the server to add or remove.
+}
+
 // DChanService provides RPC methods for distributed channel operations
 service DChanService {
   // Receive accepts Gob-encoded data for the server to decode
@@ -37,5 +45,8 @@ service DChanService {
 
   rpc RegisterReceiver(ReceiverRequest) returns (google.protobuf.Empty);
   rpc UnregisterReceiver(ReceiverRequest) returns (google.protobuf.Empty);
+
+  rpc AddVoter(ServerInfo) returns (google.protobuf.Empty);
+  rpc RemoveVoter(ServerInfo) returns (google.protobuf.Empty);
 }
 
