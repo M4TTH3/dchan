@@ -1,5 +1,10 @@
 package dchan
 
+import (
+	"iter"
+	"slices"
+)
+
 // OrderedSet is a set of elements that are ordered in the order of insertion.
 // It prefers many reads and fewer puts and deletes.
 type orderedSet[T comparable] struct {
@@ -12,6 +17,23 @@ func newOrderedSet[T comparable]() *orderedSet[T] {
 		items:    make([]T, 0),
 		indexSet: make(map[T]int),
 	}
+}
+
+func newOrderedSetFromSlice[T comparable](items []T) *orderedSet[T] {
+	set := newOrderedSet[T]()
+	for _, item := range items {
+		set.put(item)
+	}
+	return set
+}
+
+func newOrderedSetFromSeq[T comparable](seq iter.Seq[T]) *orderedSet[T] {
+	set := newOrderedSet[T]()
+	for item := range seq {
+		set.put(item)
+	}
+
+	return set
 }
 
 // Has returns true if the element exists in the set.
@@ -67,4 +89,24 @@ func (s *orderedSet[T]) delete(item T) bool {
 // O(1)
 func (s *orderedSet[T]) len() int {
 	return len(s.items)
+}
+
+// ToSlice returns a slice of the elements in the set.
+// Note: this is a copy of the elements.
+// O(n)
+func (s *orderedSet[T]) toSlice() []T {
+	return slices.Clone(s.items)
+}
+
+// Difference returns a new set with the elements that are in the first set but not in the second.
+// O(n)
+func (s *orderedSet[T]) difference(other *orderedSet[T]) *orderedSet[T] {
+	newSet := newOrderedSet[T]()
+	for _, item := range s.items {
+		if !other.has(item) {
+			newSet.put(item)
+		}
+	}
+
+	return newSet
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/gob"
 	"errors"
+	"maps"
 	"sync"
 	"sync/atomic"
 
@@ -53,9 +54,6 @@ type Chan interface {
 	//
 	// Note: The CloseFunc is asynchronous and returns a Future (asynchronous channel)
 	//       The channel can be used if items in the buffer. Otherwise check for channel closed.
-	//
-	// We recommend waiting on the future before re-opening in the same namespace.
-	// Otherwise, it could be magnitude slower as we have to fix the logs.
 	Receive(namespace Namespace, bufferSize BufferSize) (<-chan any, CloseFunc, error)
 
 	Close() Future
@@ -146,8 +144,8 @@ type dChan struct {
 	// Server ID of this server.
 	id ServerId
 
-	// Servers that are receiving this channel (open for receiving).
-	// Used for senders to know which servers to send to.
+	// Servers that are receiving this namespace (open for receiving).
+	// Used for senders to know which servers to send to (round-robin).
 	// Updated via Raft FSM.
 	extmu            sync.RWMutex
 	externalChannels map[Namespace]*externalChannel
@@ -163,6 +161,8 @@ type dChan struct {
 	tm   *transport.Manager
 	raft *raft.Raft
 }
+
+var _ Chan = &dChan{}
 
 func (d *dChan) Send(namespace Namespace, bufferSize BufferSize) (chan<- any, CloseFunc, error) {
 	d.smu.Lock()
@@ -371,7 +371,7 @@ func (d *dChan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Futu
 
 	// Acquire the write lock to update externalChannel.servers
 	d.extmu.Lock()
-	d.rmu.Unlock()
+	d.rmu.RUnlock()
 
 	externalChannel := d.getExternalChannel(namespace)
 	externalChannel.servers.put(serverId)
@@ -396,14 +396,14 @@ func (d *dChan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, se
 	// (e.g. failed to send) then we should actually re-register the
 	// receiver if it's still up
 	if serverId == d.id && sender != serverId {
-		if _, ok := d.receivers[namespace]; ok {
+		if receiver, ok := d.receivers[namespace]; ok && !receiver.closed {
 			d.rmu.RUnlock()
 			return d.registerReceiver(namespace)
 		}
 	}
 
 	d.extmu.Lock()
-	d.rmu.RUnlock()
+	d.rmu.RUnlock() // TODO can we unlock early?
 	defer d.extmu.Unlock()
 
 	future := newFuture()
@@ -413,6 +413,69 @@ func (d *dChan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, se
 
 	future.set(nil)
 	return future
+}
+
+// Called from the FSM to get the current state of the external channels.
+// This is used to create a snapshot of the state machine.
+func (d *dChan) fsmGetState() map[Namespace][]ServerId {
+	d.extmu.RLock()
+	defer d.extmu.RUnlock()
+
+	state := make(map[Namespace][]ServerId)
+	for namespace, externalChannel := range d.externalChannels {
+		state[namespace] = externalChannel.servers.toSlice()
+	}
+
+	return state
+}
+
+// Called from the FSM to restore the state of the external channels.
+// This is used to restore the state machine from a snapshot.
+//
+// This function should match receiver state with the saved state of the server
+// when this server is in the list.
+// 
+// Case 1: receiver exists (and not closed) and that namespace isn't in external channel.
+//    then register the receiver. We can ignore this as the snapshot is behind.
+// Case 2: namespace is in external channel but receiver doesn't exist,
+//    then unregister the receiver.
+//
+// We should be modifying externalChannels rather than replacing if it exists already.
+//
+// Note: unregister is idempotent e.g. double unregister is fine but is slow.
+func (d *dChan) fsmRestore(state map[Namespace][]ServerId) error {
+	d.rmu.RLock()
+	defer d.rmu.RUnlock()
+
+	d.extmu.Lock()
+	defer d.extmu.Unlock()
+
+	// We're preferring to modify existing entries. So any namespace not in the saved state
+	// should be deleted.
+	savedKeys := newOrderedSetFromSeq(maps.Keys(state))
+	maps.DeleteFunc(d.externalChannels, func(namespace Namespace, externalChannel *externalChannel) bool {
+		return !savedKeys.has(namespace)
+	})
+
+	// Update the servers in the external channel.
+	for namespace, servers := range state {
+		externalChannel := d.getExternalChannel(namespace)
+		externalChannel.servers = newOrderedSetFromSlice(servers)
+
+		// Proceed if there's no local receiver check
+		if !externalChannel.servers.has(d.id) {
+			continue
+		}
+
+		// If the local receiver is not open, we should unregister it.
+		if _, ok := d.receivers[namespace]; !ok {
+			if err := d.unregisterReceiver(namespace, d.id).Wait(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // Send a RegisterReceiver command to the Raft cluster.
@@ -486,4 +549,7 @@ func NewRaft() {
 	// https://github.com/hashicorp/raft
 	_ = transport.New(raft.ServerAddress("localhost:1234"), []grpc.DialOption{})
 
+	// TODO consider adding explicit timeout to each channel message.
+	// e.g. a failed node could block forever.
+	// Also consider closing that receiver if the node is unresponsive (after sending)
 }

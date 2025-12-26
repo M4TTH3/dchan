@@ -104,3 +104,38 @@ func TestOrderPreservation(t *testing.T) {
 		t.Errorf("expected 'b', got %v", val)
 	}
 }
+
+func TestToSlice(t *testing.T) {
+	s := newOrderedSet[string]()
+
+	s.put("a")
+	s.put("b")
+	s.put("c")
+
+	slice := s.toSlice()
+	if len(slice) != 3 {
+		t.Errorf("expected 3 items, got %d", len(slice))
+	}
+}
+
+func TestDifference(t *testing.T) {
+	s1 := newOrderedSet[string]()
+	s2 := newOrderedSet[string]()
+
+	s1.put("a")
+	s1.put("b")
+	s1.put("c")
+
+	s2.put("b")
+	s2.put("c")
+	s2.put("d")
+
+	diff := s1.difference(s2)
+	if diff.len() != 1 {
+		t.Errorf("expected 1 item, got %d", diff.len())
+	}
+
+	if !diff.has("a") {
+		t.Error("set should have 'a' after difference")
+	}
+}
