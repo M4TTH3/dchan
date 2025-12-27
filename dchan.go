@@ -5,10 +5,16 @@ import (
 	"encoding/gob"
 	"errors"
 	"maps"
+	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
+	boltdb "github.com/hashicorp/raft-boltdb"
 	p "github.com/m4tth3/dchan/proto"
 	transport "github.com/m4tth3/dchan/transport"
 	"google.golang.org/grpc"
@@ -62,17 +68,28 @@ type Chan interface {
 	Close() Future
 }
 
-// New creates a new dChan with the given address, session ID, cluster addresses, and options.
+// New creates a new dChan with the given address, cluster ID, cluster addresses, and options.
 // The address is the address of this server.
-// The session ID is the session ID of this server.
+// The cluster ID is the cluster ID of this server.
 // The cluster addresses are the addresses of initial cluster members (e.g. possibly itself).
 // The options are the options for the dChan.
-func New(addr string, sessionId string, clusterAddr []string, options ...Option) (Chan, error) {
-	server := grpc.NewServer()
-
-	d := &dChan{
-		server: server,
+//
+// Note: we can join as a new node as long as we have a member of the cluster e.g. in initial cluster
+// addresses.
+//
+// Thus, we recommend having the same initial cluster addresses for all servers. Similarly,
+// initial startup order should attempted to be the same as the cluster addresses.
+func New(address string, clusterId string, clusterAddresses []string, storeDir string, options ...Option) (Chan, error) {
+	dir := filepath.Join(storeDir, clusterId)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
 	}
+
+	d := &dChan{Config: DefaultConfig()}
+	d.Config.Id = ServerId(address)
+	d.Config.ClusterId = clusterId
+	d.Config.ClusterAddresses = clusterAddresses
+	d.Config.StoreDir = dir
 
 	for _, option := range options {
 		if err := option(d); err != nil {
@@ -80,6 +97,30 @@ func New(addr string, sessionId string, clusterAddr []string, options ...Option)
 		}
 	}
 
+	// Initialize the gRPC server if it's not provided.
+	if d.server == nil {
+		// Let's create a new gRPC server
+		tel, err := net.Listen("tcp", address)
+		if err != nil {
+			return nil, err
+		}
+
+		d.server = grpc.NewServer()
+		p.RegisterDChanServiceServer(d.server, server{dchan: d})
+		go d.server.Serve(tel)
+	}
+
+	// Create the transport manager.
+	d.tm = transport.New(raft.ServerAddress(address), d.DialOptions)
+	d.tm.Register(d.server)
+
+	// Initialize the cluster.
+	r, err := d.newRaft()
+	if err != nil {
+		return nil, err
+	}
+
+	d.raft = r
 	return d, nil
 }
 
@@ -217,18 +258,35 @@ func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any,
 }
 
 func (d *dChan) Close() Future {
-	d.smu.Lock()
-	d.rmu.Lock()
-	d.extmu.Lock()
-	defer d.extmu.Unlock()
-	defer d.rmu.Unlock()
-	defer d.smu.Unlock()
-
 	future := newFuture()
 
-	// TODO: Close all channels and remove from senders and receivers.
-	f := d.raft.Shutdown()
-	f.Error()
+	go func() {
+		d.smu.Lock()
+		d.rmu.Lock()
+		d.extmu.Lock()
+		defer d.extmu.Unlock()
+		defer d.rmu.Unlock()
+		defer d.smu.Unlock()
+
+		// TODO: Close all channels and remove from senders and receivers.
+		f := d.raft.Shutdown()
+		var err error = nil
+
+		if err := d.unregisterAsVoter().Wait(); err != nil {
+			err = multierror.Append(err, err)
+		}
+
+		if err := d.tm.Close(); err != nil {
+			err = multierror.Append(err, err)
+		}
+
+		if err := f.Error(); err != nil {
+			err = multierror.Append(err, err)
+		}
+
+		d.server.GracefulStop()
+		future.set(err)
+	}()
 
 	return future
 }
@@ -553,11 +611,11 @@ func (d *dChan) unregisterReceiver(namespace Namespace, serverId ServerId) Futur
 // Note: the future returns the error of raft.Apply e.g.
 // ErrNotLeader, ErrLeadershipLost, etc.
 // or the error of the gRPC call.
-func (d *dChan) registerAsVoter() Future {
+func (d *dChan) registerAsVoter(askAddress string) Future {
 	future := newFuture()
 
 	go func() {
-		client, err := d.getLeaderClient()
+		client, err := d.getClient(raft.ServerAddress(askAddress))
 		if err != nil {
 			future.set(err)
 			return
@@ -598,8 +656,12 @@ func (d *dChan) unregisterAsVoter() Future {
 }
 
 func (d *dChan) getLeaderClient() (p.DChanServiceClient, error) {
-	leader := d.raft.Leader()
-	conn, err := d.tm.ConnectionManager().Register(raft.ServerAddress(leader))
+	addr, _ := d.raft.LeaderWithID()
+	return d.getClient(addr)
+}
+
+func (d *dChan) getClient(address raft.ServerAddress) (p.DChanServiceClient, error) {
+	conn, err := d.tm.ConnectionManager().Register(address)
 	if err != nil {
 		return nil, err
 	}
@@ -607,13 +669,92 @@ func (d *dChan) getLeaderClient() (p.DChanServiceClient, error) {
 	return p.NewDChanServiceClient(conn), nil
 }
 
-func NewRaft() {
-	// https://github.com/Jille/raft-grpc-example/blob/master/main.go
-	// https://github.com/hashicorp/raft-boltdb
-	// https://github.com/hashicorp/raft
-	_ = transport.New(raft.ServerAddress("localhost:1234"), []grpc.DialOption{})
+// TODO consider closing that receiver if the node is unresponsive (after sending)
 
-	// TODO consider adding explicit timeout to each channel message.
-	// e.g. a failed node could block forever.
-	// Also consider closing that receiver if the node is unresponsive (after sending)
+// Initialize the Raft cluster.
+//
+// Transport manager should be initialized before this function
+// and the default config.
+func (d *dChan) newRaft() (*raft.Raft, error) {
+	logPath := filepath.Join(d.StoreDir, "logs.dat")
+	stablePath := filepath.Join(d.StoreDir, "stable.dat")
+
+	config := raft.DefaultConfig()
+	config.LocalID = raft.ServerID(d.Id)
+
+	logStore, err := boltdb.NewBoltStore(logPath)
+	if err != nil {
+		return nil, err
+	}
+
+	stableStore, err := boltdb.NewBoltStore(stablePath)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshotStore, err := raft.NewFileSnapshotStore(d.StoreDir, d.SnapshotCount, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+
+	fsm := &fsm{dchan: d}
+	r, err := raft.NewRaft(config, fsm, logStore, stableStore, snapshotStore, d.tm.Transport())
+	if err != nil {
+		return nil, err
+	}
+
+	// If we're the first node, we should become the leader.
+	if d.ClusterAddresses[0] == string(d.Id) {
+		// Check if the cluster is already bootstrapped.
+		if exist, err := raft.HasExistingState(logStore, stableStore, snapshotStore); err != nil {
+			return nil, err
+		} else if exist {
+			return r, nil
+		}
+
+		// Bootstrap the itself and the other nodes in the cluster
+		// will request to join the cluster.
+		future := d.raft.BootstrapCluster(raft.Configuration{
+			Servers: []raft.Server{
+				{
+					ID:       raft.ServerID(d.Id),
+					Address:  raft.ServerAddress(d.Id),
+					Suffrage: raft.Voter,
+				},
+			},
+		})
+
+		if err := future.Error(); err != nil {
+			return nil, err
+		}
+	} else {
+		// Try joining the cluster. We will retry until we become a voter
+		// or we reach the max number of retries.
+		retry := 0
+		err := errors.New("failed to join the cluster after max retries")
+
+		for {
+			// Ask the next node in the list to become a voter.
+			if d.ClusterAddresses[0] == string(d.Id) {
+				continue
+			}
+
+			if retry == d.MaxJoinRetries {
+				return nil, err
+			}
+
+			retry++
+
+			target := d.ClusterAddresses[retry%len(d.ClusterAddresses)]
+			future := d.registerAsVoter(target)
+			if tmErr := future.Wait(); tmErr != nil {
+				err = multierror.Append(err, tmErr)
+				time.Sleep(d.RetryDelay)
+			} else {
+				break
+			}
+		}
+	}
+
+	return r, nil
 }

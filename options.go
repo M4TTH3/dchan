@@ -5,11 +5,27 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
-	DefaultSendTimeout = 2 * time.Minute
+	DefaultSendTimeout    = 2 * time.Minute
 	DefaultClusterTimeout = 2 * time.Minute
+	DefaultSnapshotCount  = 3
+	DefaultMaxJoinRetries = 5
+	DefaultRetryDelay     = 3 * time.Second
+
+	DefaultCallOptions = []grpc.CallOption{
+		grpc.WaitForReady(true),
+	}
+
+	DefaultDialOptions = []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+
+	DefaultServerOptions = []grpc.ServerOption{
+		grpc.Creds(insecure.NewCredentials()),
+	}
 )
 
 type Option func(*dChan) error
@@ -17,6 +33,18 @@ type Option func(*dChan) error
 type Config struct {
 	// Server ID of this server.
 	Id ServerId
+
+	// Base directory for the store.
+	StoreDir string
+
+	// Every node must have this unique cluster ID.
+	//
+	// Currently used for file store names, but possibly we should
+	// append it to the address as an ID.
+	ClusterId string
+
+	// Cluster addresses of initial cluster members (e.g. possibly itself).
+	ClusterAddresses []string
 
 	// Timeout for sending messages
 	// Default to 2 minute
@@ -38,6 +66,15 @@ type Config struct {
 
 	// Server options for the gRPC server.
 	ServerOptions []grpc.ServerOption
+
+	// Snapshot count for the raft snapshot store.
+	SnapshotCount int
+
+	// Max number of retries to join the cluster.
+	MaxJoinRetries int
+
+	// Delay between retries.
+	RetryDelay time.Duration
 }
 
 // sendCtx returns a context with the send timeout.
@@ -56,6 +93,20 @@ func (c *Config) clusterCtx() (context.Context, context.CancelFunc) {
 	}
 
 	return context.Background(), func() {}
+}
+
+func DefaultConfig() Config {
+	return Config{
+		SendTimeout:    DefaultSendTimeout,
+		ClusterTimeout: DefaultClusterTimeout,
+		SnapshotCount:  DefaultSnapshotCount,
+		MaxJoinRetries: DefaultMaxJoinRetries,
+		RetryDelay:     DefaultRetryDelay,
+
+		DialOptions:    DefaultDialOptions,
+		CallOptions:    DefaultCallOptions,
+		ServerOptions:  DefaultServerOptions,
+	}
 }
 
 // WithSendTimeout configures the send timeout.
@@ -114,6 +165,13 @@ func WithCallOptions(options ...grpc.CallOption) Option {
 func WithServerOptions(options ...grpc.ServerOption) Option {
 	return func(d *dChan) error {
 		d.ServerOptions = options
+		return nil
+	}
+}
+
+func WithSnapshotCount(count int) Option {
+	return func(d *dChan) error {
+		d.SnapshotCount = count
 		return nil
 	}
 }
