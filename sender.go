@@ -20,7 +20,7 @@ type Message struct {
 	ctx  context.Context
 	cancel context.CancelFunc
 
-	sent chan struct{}
+	sent chan bool
 }
 
 // WithMessage creates a new Message object that can be used to send a message to wait
@@ -35,7 +35,7 @@ func WithMessage(obj any, timeout time.Duration) Message {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	return Message{value: obj, ctx: ctx, cancel: cancel, sent: make(chan struct{})}
+	return Message{value: obj, ctx: ctx, cancel: cancel, sent: make(chan bool, 1)}
 }
 
 // Done waits until the message is sent or the context is done.
@@ -46,8 +46,9 @@ func WithMessage(obj any, timeout time.Duration) Message {
 // Guarantees at most once semantics.
 func (w Message) Done() bool {
 	select {
-	case <-w.sent:
-		return true
+	case sent := <-w.sent:
+		w.sent <- false
+		return sent
 	case <-w.ctx.Done():
 		return false
 	}
@@ -144,9 +145,7 @@ func (s *sender) start() {
 		for v := range s.chann.ch {
 			obj, ok := v.(Message)
 			if ok {
-				if s.send(obj.value, obj.ctx) {
-					obj.sent <- struct{}{}
-				}
+				obj.sent <- s.send(obj.value, obj.ctx)
 				obj.cancel()
 			} else {
 				// TODO: maybe we set this right before the request

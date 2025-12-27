@@ -10,13 +10,13 @@ For a native feel, the library is built on gRPC with Gob encoding to pass struct
 ```go
 // Server 1
 func main() {
-    options := []dchan.Options {
+    options := []Options {
         // Other Server IDs or at least one for discovery
         // BoltDB path (file path)
         // Register for Gob encodings
     }
 
-    chann := dchan.NewChan(..., options)
+    chann := dchan.New(..., options)
 
     // <-chan any, CloseFunc, error 
     fooCh, closeFoo, err = chann.Receive("FooChannel", bufSize)
@@ -33,14 +33,17 @@ func main() {
     oofCh <- oof{}
 
     // Optionally use:
-    ctx := context.WithTimeout(context.Background(), timeout) // Timeout is optional
-    oofObj := dchan.WithWait(oof{}, ctx)
+    timeout := time.Minute * 2 // really large message oof
+    oofObj := dchan.WithMessage(oof{}, timeout)
+
     select{
-    case oofCh <- oof{}:
-    case ctx.Done(): // cancel if timeout finishes first
+    case oofCh <- oof{}: // could block if buffer full
+    case oofObj.Done(): // cancel if timeout finishes first
     }
 
-    <-oofObj.Done() // Wait until it's sent e.g. if it's buffered
+    // sent (bool) determines if we guaranteed know it's reached another channel
+    // otherwise it could be in any state e.g. received or not
+    sent := oofObj.Done()
 }
 
 // Server 2
@@ -54,6 +57,16 @@ func main() {
 }
 
 ```
+
+## Implementation Details
+
+Main Implementation:
+- Built on HashiCorp/Raft and gRPC
+- Raft to coordinate (sequential consistency) among nodes whose receiving what namespaces
+- gRPC (with Raft connection reuse) to send messages node->node (supporting backpressure and async messaging)
+- At most once semantics
+- Use gob/encoding for messages, and users can define their own encoders simply
+- Broadcasts are sent via an epidemic algorithm over gRPC (TODO)
 
 ## Similar Projects
 
@@ -71,24 +84,15 @@ A few examples are:
 
 This implementation focuses on the core of Actors, aka the Mailbox, which happens to share a similar philosophy to Go Channels. With minimal work, we could recreate an actor system.
 
-## Implementation Details
-
-Main Implementation:
-- Built on HashiCorp/Raft and gRPC
-- Raft to coordinate (sequential consistency) among nodes whose receiving what channels
-- gRPC (with Raft connection hijacking) to send messages across channels (supporting backpressure and/or async messaging)
-- Use gob/encoding for messages, and users can define their own encoders simply
-- Broadcasts are sent via an epidemic algorithm over gRPC
-
 ## TODO
 
 TODO:
-- [ x ] Make the transport layer better.
-- [ x ] Add connection manager and connection hijacking (e.g. shared between Raft and Messangers)
-- [ x ] Add tests for the transport layer (especially more than 2 nodes)
-- [ x ] Setup interfaces for Distributed Channels
-- [ ] Implement the Raft FSM to register receivers and functions to register in and out as receivers
-- [ x ] Implement the gRPC communications
+- [x] Make the transport layer better.
+- [x] Add connection manager and connection hijacking (e.g. shared between Raft and Messangers)
+- [x] Add tests for the transport layer (especially more than 2 nodes)
+- [x] Setup interfaces for Distributed Channels
+- [x] Implement the Raft FSM to register receivers and functions to register in and out as receivers
+- [x] Implement the gRPC communications
 - [ ] Add tests!!!!
 - [ ] Implement Broadcast (but this can be done later)
 
