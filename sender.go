@@ -41,13 +41,13 @@ func WithMessage(obj any, timeout time.Duration) Message {
 // Done waits until the message is sent or the context is done.
 //
 // Returns true if the message is guaranteed sent (e.g. target received it).
-// False if the message is only possibly sent or not at all (e.g. context is done)
+// False if the message is possibly sent or not at all (e.g. context is done)
 //
 // Guarantees at most once semantics.
 func (w Message) Done() bool {
 	select {
 	case sent := <-w.sent:
-		w.sent <- false
+		w.sent <- sent // Pass it to next
 		return sent
 	case <-w.ctx.Done():
 		return false
@@ -55,7 +55,7 @@ func (w Message) Done() bool {
 }
 
 type sender struct {
-	dchan *dChan
+	dchan *Chan
 	chann *channel
 
 	i uint32
@@ -67,6 +67,7 @@ type sender struct {
 // at most once semantics.
 //
 // TODO: support sending the encoded as chunks.
+// TODO: add logging support
 func (s *sender) send(v any, ctx context.Context) bool {
 	var target ServerId
 
@@ -75,6 +76,7 @@ func (s *sender) send(v any, ctx context.Context) bool {
 
 		s.dchan.extmu.RLock()
 		externalChannel := s.dchan.getExternalChannel(s.chann.namespace)
+
 		// We should block until we have at least one target.
 		if externalChannel.servers.len() == 0 {
 			// We have to wait and baton pass the write lock from the StateMachine to here
@@ -85,14 +87,8 @@ func (s *sender) send(v any, ctx context.Context) bool {
 
 			// After this point we have the WRITE Lock with an id reachable
 			externalChannel.waitCount.Add(-1)
-			value, ok := externalChannel.servers.get(int(s.i % uint32(externalChannel.servers.len())))
-			if !ok {
-				// Drop message if no target is found.
-				// TODO: Add Logging support
-				return false
-			} else {
-				target = value // Set the target to the next server.
-			}
+			serverLen := uint32(externalChannel.servers.len())
+			target, _ = externalChannel.servers.get(int(s.i % serverLen))
 
 			// Check if we can pass the baton again
 			if externalChannel.waitCount.Load() > 0 {
@@ -104,28 +100,20 @@ func (s *sender) send(v any, ctx context.Context) bool {
 			s.dchan.extmu.RUnlock()
 		}
 
-		conn, ok := s.dchan.tm.ConnectionManager().Hijack(raft.ServerAddress(target)) // TODO: maybe switch to register
-		if !ok {
-			// Drop message if no connection is found.
-			// TODO: Add Logging support
+		client, err := s.dchan.getClient(raft.ServerAddress(target))
+		if err != nil {
 			return false
 		}
-
-		client := p.NewDChanServiceClient(conn)
 
 		var buf bytes.Buffer
 		enc := gob.NewEncoder(&buf)
 		if err := enc.Encode(v); err != nil {
-			// Drop message if encoding fails.
-			// TODO: Add Logging support
 			return false
 		}
 
 		// User can add timeouts via grpc options.
 		resp, err := client.Receive(ctx, &p.ReceiveRequest{})
 		if err != nil {
-			// Drop message if receiving fails.
-			// TODO: Add Logging support
 			return false
 		}
 

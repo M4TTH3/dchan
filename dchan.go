@@ -40,88 +40,31 @@ type CustomEncodable interface {
 //
 // Future optimization:
 // - Start as a non-voter and upgrade to a voter if we start receiving messages. Idk if this is worth it tbh.
-type Chan interface {
-	// Send returns a channel that can be used to send messages to the distributed channel.
-	// Explicitly run CloseFunc when the channel is no longer needed.
-	//
-	// The bufferSize is Sender + Receiver buffer sizes.
-	// Use a send deadline to avoid blocking if that's desired.
-	//
-	// If a local channel already exists, the same instance is returned (bufferSize is ignored).
-	//
-	// Note: The CloseFunc is asynchronous and returns a Future (asynchronous channel).
-	//       The channel should not be used after the CloseFunc is called.
-	Send(namespace Namespace, bufferSize BufferSize) (chan<- any, CloseFunc, error)
-
-	// TODO: Support in the future. Use an epidemic broadcast approach.
-	// Broadcast(namespace Namespace, ctx context.Context) (chan<- T, context.CancelFunc, error)
-
-	// Receive returns a channel that can be used to receive messages from the distributed channel.
-	// Explicitly run CloseFunc to close the channel.
-	//
-	// If a local channel already exists, the same instance is returned (bufferSize is ignored).
-	//
-	// Note: The CloseFunc is asynchronous and returns a Future (asynchronous channel)
-	//       The channel can be used if items in the buffer. Otherwise check for channel closed.
-	Receive(namespace Namespace, bufferSize BufferSize) (<-chan any, CloseFunc, error)
-
-	Close() Future
-}
-
-// New creates a new dChan with the given address, cluster ID, cluster addresses, and options.
-// The address is the address of this server.
-// The cluster ID is the cluster ID of this server.
-// The cluster addresses are the addresses of initial cluster members (e.g. possibly itself).
-// The options are the options for the dChan.
 //
-// Note: we can join as a new node as long as we have a member of the cluster e.g. in initial cluster
-// addresses.
-//
-// Thus, we recommend having the same initial cluster addresses for all servers. Similarly,
-// initial startup order should attempted to be the same as the cluster addresses.
-func New(address string, clusterId string, clusterAddresses []string, storeDir string, options ...Option) (Chan, error) {
-	dir := filepath.Join(storeDir, clusterId)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, err
-	}
+// TODO: Support in the future. Use an epidemic broadcast approach.
+// Broadcast(namespace Namespace, ctx context.Context) (chan<- T, context.CancelFunc, error)
+type Chan struct {
+	Config
 
-	d := &dChan{Config: DefaultConfig()}
-	d.Config.Id = ServerId(address)
-	d.Config.ClusterId = clusterId
-	d.Config.ClusterAddresses = clusterAddresses
-	d.Config.StoreDir = dir
+	// Servers that are receiving this namespace (open for receiving).
+	// Used for senders to know which servers to send to (round-robin).
+	// Updated via Raft FSM.
+	extmu            sync.RWMutex
+	externalChannels map[Namespace]*externalChannel
 
-	for _, option := range options {
-		if err := option(d); err != nil {
-			return nil, err
-		}
-	}
+	// channels (local sender) that are open for sending from Send(...)
+	smu     sync.RWMutex
+	senders map[Namespace]*channel
 
-	// Initialize the gRPC server if it's not provided.
-	if d.server == nil {
-		// Let's create a new gRPC server
-		tel, err := net.Listen("tcp", address)
-		if err != nil {
-			return nil, err
-		}
+	// channels (local receiver) that are open for receiving from Receive(...)
+	rmu       sync.RWMutex
+	receivers map[Namespace]*rchannel
 
-		d.server = grpc.NewServer()
-		p.RegisterDChanServiceServer(d.server, server{dchan: d})
-		go d.server.Serve(tel)
-	}
+	tm     *transport.Manager
+	grpcServer *grpc.Server
+	raft   *raft.Raft
 
-	// Create the transport manager.
-	d.tm = transport.New(raft.ServerAddress(address), d.DialOptions)
-	d.tm.Register(d.server)
-
-	// Initialize the cluster.
-	r, err := d.newRaft()
-	if err != nil {
-		return nil, err
-	}
-
-	d.raft = r
-	return d, nil
+	client
 }
 
 // channel contains local chan that tracks reference counts
@@ -185,33 +128,80 @@ type externalChannel struct {
 	waitCount atomic.Int32
 }
 
-// dChan is a distributed channel that can be used to send and receive messages between nodes.
-// It is a wrapper around a map of dChanStreams, one for each namespace.
-type dChan struct {
-	Config
+// New creates a new dChan with the given address, cluster ID, cluster addresses, and options.
+// The address is the address of this server.
+// The cluster ID is the cluster ID of this server.
+// The cluster addresses are the addresses of initial cluster members (e.g. possibly itself).
+// The options are the options for the dChan.
+//
+// Note: we can join as a new node as long as we have a member of the cluster e.g. in initial cluster
+// addresses.
+//
+// Thus, we recommend having the same initial cluster addresses for all servers. Similarly,
+// initial startup order should attempted to be the same as the cluster addresses.
+func New(address string, clusterId string, clusterAddresses []string, storeDir string, options ...Option) (*Chan, error) {
+	dir := filepath.Join(storeDir, clusterId)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
 
-	// Servers that are receiving this namespace (open for receiving).
-	// Used for senders to know which servers to send to (round-robin).
-	// Updated via Raft FSM.
-	extmu            sync.RWMutex
-	externalChannels map[Namespace]*externalChannel
+	d := &Chan{Config: DefaultConfig()}
+	d.Config.Id = ServerId(address)
+	d.Config.ClusterId = clusterId
+	d.Config.ClusterAddresses = clusterAddresses
+	d.Config.StoreDir = dir
 
-	// channels (local sender) that are open for sending from Send(...)
-	smu     sync.RWMutex
-	senders map[Namespace]*channel
+	for _, option := range options {
+		if err := option(d); err != nil {
+			return nil, err
+		}
+	}
 
-	// channels (local receiver) that are open for receiving from Receive(...)
-	rmu       sync.RWMutex
-	receivers map[Namespace]*rchannel
+	// Initialize the gRPC server if it's not provided.
+	if d.grpcServer == nil {
+		// Let's create a new gRPC server
+		tel, err := net.Listen("tcp", address)
+		if err != nil {
+			return nil, err
+		}
 
-	tm     *transport.Manager
-	server *grpc.Server
-	raft   *raft.Raft
+		d.grpcServer = grpc.NewServer()
+		p.RegisterDChanServiceServer(d.grpcServer, server{dchan: d})
+		go d.grpcServer.Serve(tel)
+	}
+
+	// Create the transport manager.
+	d.tm = transport.New(raft.ServerAddress(address), d.DialOptions)
+	d.tm.Register(d.grpcServer)
+
+	// Initialize the cluster.
+	r, err := d.newRaft()
+	if err != nil {
+		return nil, err
+	}
+
+	d.raft = r
+	d.client = client{
+		localID: address,
+		raft: r,
+		config: &d.Config,
+		cm: d.tm.ConnectionManager(),
+	}
+
+	return d, nil
 }
 
-var _ Chan = &dChan{}
-
-func (d *dChan) Send(namespace Namespace, bufferSize BufferSize) (chan<- any, CloseFunc, error) {
+// Send returns a channel that can be used to send messages to the distributed channel.
+// Explicitly run CloseFunc when the channel is no longer needed.
+//
+// The bufferSize is Sender + Receiver buffer sizes.
+// Use a send deadline to avoid blocking if that's desired.
+//
+// If a local channel already exists, the same instance is returned (bufferSize is ignored).
+//
+// Note: The CloseFunc is asynchronous and returns a Future (asynchronous channel).
+//       The channel should not be used after the CloseFunc is called.
+func (d *Chan) Send(namespace Namespace, bufferSize BufferSize) (chan<- any, CloseFunc, error) {
 	d.smu.Lock()
 	defer d.smu.Unlock()
 
@@ -229,7 +219,14 @@ func (d *dChan) Send(namespace Namespace, bufferSize BufferSize) (chan<- any, Cl
 	return chann.ch, chann.closeFunc, nil
 }
 
-func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any, CloseFunc, error) {
+// Receive returns a channel that can be used to receive messages from the distributed channel.
+// Explicitly run CloseFunc to close the channel.
+//
+// If a local channel already exists, the same instance is returned (bufferSize is ignored).
+//
+// Note: The CloseFunc is asynchronous and returns a Future (asynchronous channel)
+//       The channel can be used if items in the buffer. Otherwise check for channel closed.
+func (d *Chan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any, CloseFunc, error) {
 	d.rmu.Lock()
 	defer d.rmu.Unlock()
 
@@ -257,7 +254,7 @@ func (d *dChan) Receive(namespace Namespace, bufferSize BufferSize) (<-chan any,
 	return rchann.ch, rchann.closeFunc, nil
 }
 
-func (d *dChan) Close() Future {
+func (d *Chan) Close() Future {
 	future := newFuture()
 
 	go func() {
@@ -284,7 +281,7 @@ func (d *dChan) Close() Future {
 			err = multierror.Append(err, err)
 		}
 
-		d.server.GracefulStop()
+		d.grpcServer.GracefulStop()
 		future.set(err)
 	}()
 
@@ -294,7 +291,7 @@ func (d *dChan) Close() Future {
 // newSendCloseFunc creates a new close function for a sender channel.
 // The close function synchronizes with the sender goroutine to close
 // the channel
-func (d *dChan) newSendCloseFunc(chann *channel, namespace Namespace) CloseFunc {
+func (d *Chan) newSendCloseFunc(chann *channel, namespace Namespace) CloseFunc {
 	return func() Future {
 		future := newFuture()
 
@@ -327,7 +324,7 @@ func (d *dChan) newSendCloseFunc(chann *channel, namespace Namespace) CloseFunc 
 //
 // We recommend waiting on the future before re-opening in the same namespace.
 // Otherwise, it could be magnitude slower as we have to fix the logs.
-func (d *dChan) newReceiveCloseFunc(rchann *rchannel, cancel context.CancelFunc, namespace Namespace) CloseFunc {
+func (d *Chan) newReceiveCloseFunc(rchann *rchannel, cancel context.CancelFunc, namespace Namespace) CloseFunc {
 	return func() Future {
 		future := newFuture()
 		go func() {
@@ -401,7 +398,7 @@ func newChannel(namespace Namespace, bufferSize BufferSize) *channel {
 // If it doesn't exist, it creates a new one.
 //
 // Caller must hold the rcmu lock.
-func (d *dChan) getExternalChannel(namespace Namespace) *externalChannel {
+func (d *Chan) getExternalChannel(namespace Namespace) *externalChannel {
 	if _, ok := d.externalChannels[namespace]; !ok {
 		d.externalChannels[namespace] = &externalChannel{
 			servers:   newOrderedSet[ServerId](),
@@ -413,7 +410,7 @@ func (d *dChan) getExternalChannel(namespace Namespace) *externalChannel {
 }
 
 // Called from the FSM to register a receiver for a namespace.
-func (d *dChan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Future {
+func (d *Chan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Future {
 	d.rmu.RLock() // Unlock after extmu or early return
 
 	// If the receiver exists then it's a local call or double registration.
@@ -452,7 +449,7 @@ func (d *dChan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Futu
 }
 
 // Called from the FSM to unregister a receiver for a namespace.
-func (d *dChan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, sender ServerId) Future {
+func (d *Chan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, sender ServerId) Future {
 	d.rmu.RLock() // Unlock after extmu or early return
 
 	// call raftUnregisterReceiverCmd to unregister the receiver.
@@ -481,7 +478,7 @@ func (d *dChan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, se
 
 // Called from the FSM to get the current state of the external channels.
 // This is used to create a snapshot of the state machine.
-func (d *dChan) fsmGetState() map[Namespace][]ServerId {
+func (d *Chan) fsmGetState() map[Namespace][]ServerId {
 	d.extmu.RLock()
 	defer d.extmu.RUnlock()
 
@@ -510,7 +507,7 @@ func (d *dChan) fsmGetState() map[Namespace][]ServerId {
 // We should be modifying externalChannels rather than replacing if it exists already.
 //
 // Note: unregister is idempotent e.g. double unregister is fine but is slow.
-func (d *dChan) fsmRestore(state map[Namespace][]ServerId) error {
+func (d *Chan) fsmRestore(state map[Namespace][]ServerId) error {
 	d.rmu.RLock()
 	defer d.rmu.RUnlock()
 
@@ -545,137 +542,14 @@ func (d *dChan) fsmRestore(state map[Namespace][]ServerId) error {
 	return nil
 }
 
-// Send a RegisterReceiver command to the Raft cluster.
-// to register a receiver for a namespace in this node.
-//
-// Note: the future returns the error of raft.Apply e.g.
-// ErrNotLeader, ErrLeadershipLost, etc.
-// or the error of the gRPC call.
-func (d *dChan) registerReceiver(namespace Namespace) Future {
-	future := newFuture()
-
-	go func() {
-		client, err := d.getLeaderClient()
-		if err != nil {
-			future.set(err)
-			return
-		}
-
-		ctx, cancel := d.clusterCtx()
-		defer cancel()
-		_, err = client.RegisterReceiver(ctx, &p.ReceiverRequest{
-			Namespace: string(namespace),
-			ServerId:  string(d.Id),
-			Requester: string(d.Id),
-		})
-
-		future.set(err)
-	}()
-
-	return future
-}
-
-// Send a UnregisterReceiver command to the Raft cluster.
-// to unregister a receiver for a namespace in this node.
-//
-// Note: the future returns the error of raft.Apply e.g.
-// ErrNotLeader, ErrLeadershipLost, etc.
-// or the error of the gRPC call.
-func (d *dChan) unregisterReceiver(namespace Namespace, serverId ServerId) Future {
-	future := newFuture()
-
-	go func() {
-		client, err := d.getLeaderClient()
-		if err != nil {
-			future.set(err)
-			return
-		}
-
-		ctx, cancel := d.clusterCtx()
-		defer cancel()
-		_, err = client.UnregisterReceiver(ctx, &p.ReceiverRequest{
-			Namespace: string(namespace),
-			ServerId:  string(serverId),
-			Requester: string(d.Id),
-		})
-
-		future.set(err)
-	}()
-
-	return future
-}
-
-// Send a AddVoter command to the Raft cluster.
-// to add a voter to the cluster.
-//
-// Note: the future returns the error of raft.Apply e.g.
-// ErrNotLeader, ErrLeadershipLost, etc.
-// or the error of the gRPC call.
-func (d *dChan) registerAsVoter(askAddress string) Future {
-	future := newFuture()
-
-	go func() {
-		client, err := d.getClient(raft.ServerAddress(askAddress))
-		if err != nil {
-			future.set(err)
-			return
-		}
-
-		ctx, cancel := d.clusterCtx()
-		defer cancel()
-		_, err = client.AddVoter(ctx, &p.ServerInfo{
-			IdAddress: string(d.Id),
-		})
-
-		future.set(err)
-	}()
-
-	return future
-}
-
-func (d *dChan) unregisterAsVoter() Future {
-	future := newFuture()
-
-	go func() {
-		client, err := d.getLeaderClient()
-		if err != nil {
-			future.set(err)
-			return
-		}
-
-		ctx, cancel := d.clusterCtx()
-		defer cancel()
-		_, err = client.RemoveVoter(ctx, &p.ServerInfo{
-			IdAddress: string(d.Id),
-		})
-
-		future.set(err)
-	}()
-
-	return future
-}
-
-func (d *dChan) getLeaderClient() (p.DChanServiceClient, error) {
-	addr, _ := d.raft.LeaderWithID()
-	return d.getClient(addr)
-}
-
-func (d *dChan) getClient(address raft.ServerAddress) (p.DChanServiceClient, error) {
-	conn, err := d.tm.ConnectionManager().Register(address)
-	if err != nil {
-		return nil, err
-	}
-
-	return p.NewDChanServiceClient(conn), nil
-}
-
 // TODO consider closing that receiver if the node is unresponsive (after sending)
+// TODO go and run cancelFunc for all channels in Close()
 
 // Initialize the Raft cluster.
 //
 // Transport manager should be initialized before this function
 // and the default config.
-func (d *dChan) newRaft() (*raft.Raft, error) {
+func (d *Chan) newRaft() (*raft.Raft, error) {
 	logPath := filepath.Join(d.StoreDir, "logs.dat")
 	stablePath := filepath.Join(d.StoreDir, "stable.dat")
 

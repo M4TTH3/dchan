@@ -28,7 +28,7 @@ var (
 	}
 )
 
-type Option func(*dChan) error
+type Option func(*Chan) error
 
 type Config struct {
 	// Server ID of this server.
@@ -114,7 +114,7 @@ func DefaultConfig() Config {
 //
 // Don't recommend using a very small timeout.
 func WithSendTimeout(timeout time.Duration) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.SendTimeout = timeout
 		return nil
 	}
@@ -125,7 +125,7 @@ func WithSendTimeout(timeout time.Duration) Option {
 //
 // Don't recommend using a very small timeout.
 func WithClusterTimeout(timeout time.Duration) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.ClusterTimeout = timeout
 		return nil
 	}
@@ -133,7 +133,7 @@ func WithClusterTimeout(timeout time.Duration) Option {
 
 // WithConfig configures the dChan with the given config.
 func WithConfig(config *Config) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.Config = *config
 		return nil
 	}
@@ -141,36 +141,36 @@ func WithConfig(config *Config) Option {
 
 // Optionally reuse a gRPC server that exists.
 func WithGrpcServer(addr string, server *grpc.Server) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.Id = ServerId(addr)
-		d.server = server
+		d.grpcServer = server
 		return nil
 	}
 }
 
 func WithDialOptions(options ...grpc.DialOption) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.DialOptions = options
 		return nil
 	}
 }
 
 func WithCallOptions(options ...grpc.CallOption) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.CallOptions = options
 		return nil
 	}
 }
 
 func WithServerOptions(options ...grpc.ServerOption) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.ServerOptions = options
 		return nil
 	}
 }
 
 func WithSnapshotCount(count int) Option {
-	return func(d *dChan) error {
+	return func(d *Chan) error {
 		d.SnapshotCount = count
 		return nil
 	}

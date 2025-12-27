@@ -16,7 +16,7 @@ var (
 )
 
 type server struct {
-	dchan *dChan
+	dchan *Chan
 
 	p.UnsafeDChanServiceServer // Ensure compilation
 }

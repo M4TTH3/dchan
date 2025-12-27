@@ -11,7 +11,7 @@ import (
 // fsm is the state machine for the distributed channel.
 // It is responsible for tracking receivers for a namespace.
 type fsm struct {
-	dchan *dChan
+	dchan *Chan
 }
 
 var _ raft.BatchingFSM = &fsm{}
