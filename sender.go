@@ -96,12 +96,18 @@ func (s *sender) send(v any, ctx context.Context) bool {
 
 		var buf bytes.Buffer
 		enc := gob.NewEncoder(&buf)
-		if err := enc.Encode(v); err != nil {
+
+		// Important to encode the pointer to the value to allow for any type.
+		// Users must register the type with gob.Register to allow for decoding.
+		if err := enc.Encode(&v); err != nil {
 			return false
 		}
 
 		// User can add timeouts via grpc options.
-		resp, err := client.Receive(ctx, &p.ReceiveRequest{})
+		resp, err := client.Receive(ctx, &p.ReceiveRequest{
+			Data: buf.Bytes(),
+			Namespace: string(s.chann.namespace),
+		})
 		if err != nil {
 			return false
 		}
@@ -136,4 +142,3 @@ func (s *sender) start() {
 		s.chann.closeCh <- struct{}{}
 	}()
 }
-

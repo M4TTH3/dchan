@@ -44,7 +44,6 @@ func (r server) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveR
 	if !ok {
 		return &p.ReceiveResponse{Received: false}, nil
 	}
-	defer dec()
 
 	var v any
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&v); err != nil {
