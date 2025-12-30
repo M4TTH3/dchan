@@ -54,8 +54,20 @@ func (w Message) Done() bool {
 	}
 }
 
+// extChanManager implemented by Chan simplifies getting
+// a target, or waiting if none exists.
+//
+// this interface simplifies testing
+type extChanManager interface {
+	waitForTarget(key uint32, namespace Namespace, ctx context.Context) (ServerID, bool)
+}
+
 type sender struct {
-	dchan *Chan
+	ecm extChanManager
+
+	config *Config
+	client *client
+
 	chann *channel
 
 	i uint32
@@ -69,38 +81,15 @@ type sender struct {
 // TODO: support sending the encoded as chunks.
 // TODO: add logging support
 func (s *sender) send(v any, ctx context.Context) bool {
-	var target ServerId
-
 	for {
 		s.i++ // Increment to "round-robin" as best as possible
 
-		s.dchan.extmu.RLock()
-		externalChannel := s.dchan.getExternalChannel(s.chann.namespace)
-
-		// We should block until we have at least one target.
-		if externalChannel.servers.len() == 0 {
-			// We have to wait and baton pass the write lock from the StateMachine to here
-			externalChannel.waitCount.Add(1)
-			s.dchan.extmu.RUnlock()
-
-			<-externalChannel.waitQueue // Wait (order doesn't matter)
-
-			// After this point we have the WRITE Lock with an id reachable
-			externalChannel.waitCount.Add(-1)
-			serverLen := uint32(externalChannel.servers.len())
-			target, _ = externalChannel.servers.get(int(s.i % serverLen))
-
-			// Check if we can pass the baton again
-			if externalChannel.waitCount.Load() > 0 {
-				externalChannel.waitQueue <- struct{}{}
-			} else {
-				s.dchan.extmu.Unlock()
-			}
-		} else {
-			s.dchan.extmu.RUnlock()
+		target, ok := s.ecm.waitForTarget(s.i, s.chann.namespace, ctx)
+		if !ok {
+			return false
 		}
 
-		client, err := s.dchan.getClient(raft.ServerAddress(target))
+		client, err := s.client.getClient(raft.ServerAddress(target))
 		if err != nil {
 			return false
 		}
@@ -137,7 +126,7 @@ func (s *sender) start() {
 				obj.cancel()
 			} else {
 				// TODO: maybe we set this right before the request
-				ctx, cancel := s.dchan.sendCtx()
+				ctx, cancel := s.config.sendCtx()
 				s.send(v, ctx)
 				cancel()
 			}
@@ -147,3 +136,4 @@ func (s *sender) start() {
 		s.chann.closeCh <- struct{}{}
 	}()
 }
+

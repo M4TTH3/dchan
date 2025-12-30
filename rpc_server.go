@@ -15,8 +15,20 @@ var (
 	ErrNoLongerReceiving = errors.New("no longer receiving")
 )
 
+type receiverManager interface {
+	// Returns the receiver, a function to decrement the sending count, and a boolean
+	// indicating if the receiver exists.
+	//
+	// If the receiver is grabbed, the sending count is incremented.
+	// The function should be called when the message is sent to the receiver
+	// or the context is done to decrement the sending count.
+	getReceiver(namespace Namespace) (rch *rchannel, dec func() int32, ok bool)
+}
+
 type server struct {
-	dchan *Chan
+	rm receiverManager
+	raft *raft.Raft
+	client *client
 
 	p.UnsafeDChanServiceServer // Ensure compilation
 }
@@ -28,14 +40,11 @@ func (r server) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveR
 	namespace := Namespace(req.GetNamespace())
 	data := req.GetData()
 
-	r.dchan.rmu.RLock()
-	receiver, ok := r.dchan.receivers[namespace]; if !ok || receiver.closed {
-		r.dchan.rmu.RUnlock()
+	receiver, dec, ok := r.rm.getReceiver(namespace)
+	if !ok {
 		return &p.ReceiveResponse{Received: false}, nil
 	}
-
-	receiver.sendingCount.Add(1)
-	r.dchan.rmu.RUnlock()
+	defer dec()
 
 	var v any
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&v); err != nil {
@@ -49,7 +58,7 @@ func (r server) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveR
 	select {
 	case receiver.ch <- v:
 	case <-receiver.ctx.Done(): // No more receivers, stop sending.
-		if count := receiver.sendingCount.Add(-1); count == 0 {
+		if count := dec(); count == 0 {
 			// Last sender, notify close goroutine to close the channel.
 			receiver.closeCh <- struct{}{}
 		}
@@ -57,8 +66,7 @@ func (r server) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveR
 		return &p.ReceiveResponse{Received: false}, nil // Reject
 	}
 
-	receiver.sendingCount.Add(-1)
-
+	dec()
 	return &p.ReceiveResponse{Received: true}, nil
 }
 
@@ -66,8 +74,8 @@ func (r server) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*
 	cmd := fsmCmd{
 		Type: registerReceiver,
 		Namespace: Namespace(req.GetNamespace()),
-		ServerId: ServerId(req.GetServerId()),
-		Requester: ServerId(req.GetRequester()),
+		ServerId: ServerID(req.GetServerId()),
+		Requester: ServerID(req.GetRequester()),
 	}
 
 	encodedCmd, err := encodeFsmCmd(cmd)
@@ -75,7 +83,7 @@ func (r server) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*
 		return nil, err
 	}
 
-	future := r.dchan.raft.Apply(encodedCmd, 0)
+	future := r.raft.Apply(encodedCmd, 0)
 	if err := future.Error(); err != nil {
 		return nil, err
 	}
@@ -87,8 +95,8 @@ func (r server) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest) 
 	cmd := fsmCmd{
 		Type: unregisterReceiver,
 		Namespace: Namespace(req.GetNamespace()),
-		ServerId: ServerId(req.GetServerId()),
-		Requester: ServerId(req.GetRequester()),
+		ServerId: ServerID(req.GetServerId()),
+		Requester: ServerID(req.GetRequester()),
 	}
 
 	encodedCmd, err := encodeFsmCmd(cmd)
@@ -96,7 +104,7 @@ func (r server) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest) 
 		return nil, err
 	}
 
-	future := r.dchan.raft.Apply(encodedCmd, 0)
+	future := r.raft.Apply(encodedCmd, 0)
 	// Block until the command is applied.
 	if err := future.Error(); err != nil {
 		return nil, err
@@ -106,8 +114,8 @@ func (r server) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest) 
 }
 
 func (r server) AddVoter(ctx context.Context, req *p.ServerInfo) (*emptypb.Empty, error) {
-	if r.dchan.raft.State() != raft.Leader {
-		if leader, err := r.dchan.getLeaderClient(); err != nil {
+	if r.raft.State() != raft.Leader {
+		if leader, err := r.client.getLeaderClient(); err != nil {
 			return nil, err
 		} else {
 			// Forward the request to the leader.
@@ -118,7 +126,7 @@ func (r server) AddVoter(ctx context.Context, req *p.ServerInfo) (*emptypb.Empty
 	id := raft.ServerID(req.GetIdAddress())
 	address := raft.ServerAddress(req.GetIdAddress())
 
-	future := r.dchan.raft.AddVoter(id, address, 0, 0)
+	future := r.raft.AddVoter(id, address, 0, 0)
 	if err := future.Error(); err != nil {
 		return nil, err
 	}
@@ -127,8 +135,8 @@ func (r server) AddVoter(ctx context.Context, req *p.ServerInfo) (*emptypb.Empty
 }
 
 func (r server) RemoveVoter(ctx context.Context, req *p.ServerInfo) (*emptypb.Empty, error) {
-	if r.dchan.raft.State() != raft.Leader {
-		if leader, err := r.dchan.getLeaderClient(); err != nil {
+	if r.raft.State() != raft.Leader {
+		if leader, err := r.client.getLeaderClient(); err != nil {
 			return nil, err
 		} else {
 			// Forward the request to the leader.
@@ -138,7 +146,7 @@ func (r server) RemoveVoter(ctx context.Context, req *p.ServerInfo) (*emptypb.Em
 
 	id := raft.ServerID(req.GetIdAddress())
 
-	future := r.dchan.raft.RemoveServer(id, 0, 0)
+	future := r.raft.RemoveServer(id, 0, 0)
 	if err := future.Error(); err != nil {
 		return nil, err
 	}

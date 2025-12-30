@@ -20,9 +20,11 @@ import (
 	"google.golang.org/grpc"
 )
 
+// TODO: consider closing that receiver if the node is unresponsive (after sending)
+
 type RpcClient = p.DChanServiceClient
 
-type ServerId string
+type ServerID string
 type Namespace string
 
 type CloseFunc func() Future
@@ -67,6 +69,10 @@ type Chan struct {
 	client
 }
 
+var _ fsmManager = &Chan{} // simplify testing for fsm.go
+var _ receiverManager = &Chan{} // simplify testing for rpc_server.go
+var _ extChanManager = &Chan{} // simplify testing for sender.go
+
 // channel contains local chan that tracks reference counts
 // and a close function.
 type channel struct {
@@ -110,7 +116,7 @@ type rchannel struct {
 // externalChannel contains information about a server that is receiving this channel.
 // protected by the dchan.rcmu lock
 type externalChannel struct {
-	servers *orderedSet[ServerId]
+	servers *orderedSet[ServerID]
 
 	// goroutines waiting for a receiver to send (synchronous channel)
 	//
@@ -146,7 +152,7 @@ func New(address string, clusterId string, clusterAddresses []string, storeDir s
 	}
 
 	d := &Chan{Config: DefaultConfig()}
-	d.Config.Id = ServerId(address)
+	d.Config.Id = ServerID(address)
 	d.Config.ClusterId = clusterId
 	d.Config.ClusterAddresses = clusterAddresses
 	d.Config.StoreDir = dir
@@ -166,7 +172,7 @@ func New(address string, clusterId string, clusterAddresses []string, storeDir s
 		}
 
 		d.grpcServer = grpc.NewServer()
-		p.RegisterDChanServiceServer(d.grpcServer, server{dchan: d})
+		p.RegisterDChanServiceServer(d.grpcServer, server{rm: d, raft: d.raft, client: &d.client})
 		go d.grpcServer.Serve(tel)
 	}
 
@@ -213,7 +219,7 @@ func (d *Chan) Send(namespace Namespace, bufferSize BufferSize) (chan<- any, Clo
 	chann.closeFunc = d.newSendCloseFunc(chann, namespace)
 
 	d.senders[namespace] = chann
-	sender := &sender{dchan: d, chann: chann}
+	sender := &sender{ecm: d, config: &d.Config, client: &d.client, chann: chann}
 	sender.start() // Start the sender goroutine.
 
 	return chann.ch, chann.closeFunc, nil
@@ -275,6 +281,22 @@ func (d *Chan) Close() Future {
 
 		if err := d.tm.Close(); err != nil {
 			err = multierror.Append(err, err)
+		}
+
+		var waitFor []Future = make([]Future, 0, len(d.receivers) + len(d.senders));
+
+		for _, receiver := range d.receivers {
+			waitFor = append(waitFor, receiver.closeFunc())
+		}
+
+		for _, sender := range d.senders {
+			waitFor = append(waitFor, sender.closeFunc())
+		}
+
+		for _, future := range waitFor {
+			if err := future.Wait(); err != nil {
+				err = multierror.Append(err, err)
+			}
 		}
 
 		if err := f.Error(); err != nil {
@@ -401,7 +423,7 @@ func newChannel(namespace Namespace, bufferSize BufferSize) *channel {
 func (d *Chan) getExternalChannel(namespace Namespace) *externalChannel {
 	if _, ok := d.externalChannels[namespace]; !ok {
 		d.externalChannels[namespace] = &externalChannel{
-			servers:   newOrderedSet[ServerId](),
+			servers:   newOrderedSet[ServerID](),
 			waitQueue: make(chan struct{}),
 		}
 	}
@@ -409,8 +431,93 @@ func (d *Chan) getExternalChannel(namespace Namespace) *externalChannel {
 	return d.externalChannels[namespace]
 }
 
+// Get a server id given namespace, and if there's no available servers
+// suspend until one exists
+//
+// Synchronizes with fsmRegisterReceiver and baton passes to other waitForTarget
+// calls too. In the case there's no available servers.
+func (d *Chan) waitForTarget(key uint32, namespace Namespace, ctx context.Context) (ServerID, bool) {
+	var target ServerID
+	var success bool = true
+
+	d.extmu.RLock()
+	externalChannel := d.getExternalChannel(namespace)
+
+	setTarget := func() {
+		if !success {
+			return
+		}
+		serverLen := uint32(externalChannel.servers.len())
+		target, _ = externalChannel.servers.get(int(key % serverLen))
+	}
+
+	// We should block until we have at least one target.
+	if externalChannel.servers.len() == 0 {
+		// We have to wait and baton pass the write lock from the StateMachine to here
+		externalChannel.waitCount.Add(1)
+		d.extmu.RUnlock()
+
+		select {
+		case <-externalChannel.waitQueue: // Wait (order doesn't matter)
+		case <-ctx.Done():
+			// Race for write lock with fsmMachine
+			writeLockCh := make(chan struct{})
+			batonPassed := false
+			go func() {
+				d.extmu.Lock()
+				if !batonPassed {
+					writeLockCh <- struct{}{}
+					externalChannel.waitCount.Add(-1)
+				}
+				d.extmu.Unlock()
+			}()
+			select {
+			case <-externalChannel.waitQueue: // gives us write lock
+				batonPassed = true // don't return instead keep passing
+				success = false
+			case <-writeLockCh: // we don't own write lock
+				return target, false
+			}
+		}
+
+		// After this point we have the WRITE Lock with an id reachable
+		externalChannel.waitCount.Add(-1)
+		setTarget() // update return
+
+		// Check if we can pass the baton again
+		if externalChannel.waitCount.Load() > 0 {
+			externalChannel.waitQueue <- struct{}{}
+		} else {
+			d.extmu.Unlock()
+		}
+	} else {
+		setTarget() // update return
+		d.extmu.RUnlock()
+	}
+
+	return target, success
+}
+
+// getReceiver gets a receiver for the given namespace and increments the sending count.
+// It returns the receiver, a function to decrement the sending count, and a boolean
+// indicating if the receiver exists.
+func (d *Chan) getReceiver(namespace Namespace) (*rchannel, func() int32, bool) {
+	d.rmu.RLock()
+	receiver, ok := d.receivers[namespace]; if !ok || receiver.closed {
+		d.rmu.RUnlock()
+		return nil, nil, false
+	}
+
+	receiver.sendingCount.Add(1)
+	d.rmu.RUnlock()
+
+	return receiver, func() int32 {
+		return receiver.sendingCount.Add(-1)
+	}, true
+}
+
 // Called from the FSM to register a receiver for a namespace.
-func (d *Chan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Future {
+func (d *Chan) fsmRegisterReceiver(namespace Namespace, serverId ServerID) Future {
 	d.rmu.RLock() // Unlock after extmu or early return
 
 	// If the receiver exists then it's a local call or double registration.
@@ -449,7 +556,7 @@ func (d *Chan) fsmRegisterReceiver(namespace Namespace, serverId ServerId) Futur
 }
 
 // Called from the FSM to unregister a receiver for a namespace.
-func (d *Chan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, sender ServerId) Future {
+func (d *Chan) fsmUnregisterReceiver(namespace Namespace, serverId ServerID, sender ServerID) Future {
 	d.rmu.RLock() // Unlock after extmu or early return
 
 	// call raftUnregisterReceiverCmd to unregister the receiver.
@@ -478,11 +585,11 @@ func (d *Chan) fsmUnregisterReceiver(namespace Namespace, serverId ServerId, sen
 
 // Called from the FSM to get the current state of the external channels.
 // This is used to create a snapshot of the state machine.
-func (d *Chan) fsmGetState() map[Namespace][]ServerId {
+func (d *Chan) fsmGetState() map[Namespace][]ServerID {
 	d.extmu.RLock()
 	defer d.extmu.RUnlock()
 
-	state := make(map[Namespace][]ServerId)
+	state := make(map[Namespace][]ServerID)
 	for namespace, externalChannel := range d.externalChannels {
 		state[namespace] = externalChannel.servers.toSlice()
 	}
@@ -507,7 +614,7 @@ func (d *Chan) fsmGetState() map[Namespace][]ServerId {
 // We should be modifying externalChannels rather than replacing if it exists already.
 //
 // Note: unregister is idempotent e.g. double unregister is fine but is slow.
-func (d *Chan) fsmRestore(state map[Namespace][]ServerId) error {
+func (d *Chan) fsmRestore(state map[Namespace][]ServerID) error {
 	d.rmu.RLock()
 	defer d.rmu.RUnlock()
 
@@ -542,9 +649,6 @@ func (d *Chan) fsmRestore(state map[Namespace][]ServerId) error {
 	return nil
 }
 
-// TODO consider closing that receiver if the node is unresponsive (after sending)
-// TODO go and run cancelFunc for all channels in Close()
-
 // Initialize the Raft cluster.
 //
 // Transport manager should be initialized before this function
@@ -571,7 +675,7 @@ func (d *Chan) newRaft() (*raft.Raft, error) {
 		return nil, err
 	}
 
-	fsm := &fsm{dchan: d}
+	fsm := &fsm{fm: d}
 	r, err := raft.NewRaft(config, fsm, logStore, stableStore, snapshotStore, d.tm.Transport())
 	if err != nil {
 		return nil, err

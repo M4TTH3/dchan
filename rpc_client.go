@@ -52,7 +52,7 @@ func (c *client) registerReceiver(namespace Namespace) Future {
 // Note: the future returns the error of raft.Apply e.g.
 // ErrNotLeader, ErrLeadershipLost, etc.
 // or the error of the gRPC call.
-func (c *client) unregisterReceiver(namespace Namespace, serverId ServerId) Future {
+func (c *client) unregisterReceiver(namespace Namespace, serverId ServerID) Future {
 	future := newFuture()
 
 	go func() {

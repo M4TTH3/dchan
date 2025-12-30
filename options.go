@@ -32,7 +32,7 @@ type Option func(*Chan) error
 
 type Config struct {
 	// Server ID of this server.
-	Id ServerId
+	Id ServerID
 
 	// Base directory for the store.
 	StoreDir string
@@ -142,7 +142,7 @@ func WithConfig(config *Config) Option {
 // Optionally reuse a gRPC server that exists.
 func WithGrpcServer(addr string, server *grpc.Server) Option {
 	return func(d *Chan) error {
-		d.Id = ServerId(addr)
+		d.Id = ServerID(addr)
 		d.grpcServer = server
 		return nil
 	}

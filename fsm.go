@@ -8,10 +8,17 @@ import (
 	"github.com/hashicorp/raft"
 )
 
+type fsmManager interface {
+	fsmRegisterReceiver(namespace Namespace, serverId ServerID) Future
+	fsmUnregisterReceiver(namespace Namespace, serverId ServerID, requester ServerID) Future
+	fsmRestore(saved map[Namespace][]ServerID) error
+	fsmGetState() map[Namespace][]ServerID
+}
+
 // fsm is the state machine for the distributed channel.
 // It is responsible for tracking receivers for a namespace.
 type fsm struct {
-	dchan *Chan
+	fm fsmManager
 }
 
 var _ raft.BatchingFSM = &fsm{}
@@ -27,8 +34,8 @@ const (
 type fsmCmd struct {
 	Type      fsmCmdType
 	Namespace Namespace
-	ServerId  ServerId
-	Requester ServerId
+	ServerId  ServerID
+	Requester ServerID
 }
 
 func encodeFsmCmd(cmd fsmCmd) ([]byte, error) {
@@ -63,12 +70,12 @@ func (f *fsm) Apply(log *raft.Log) any {
 
 	switch cmd.Type {
 	case registerReceiver:
-		future := f.dchan.fsmRegisterReceiver(cmd.Namespace, cmd.ServerId)
+		future := f.fm.fsmRegisterReceiver(cmd.Namespace, cmd.ServerId)
 		if err := future.Wait(); err != nil {
 			return err
 		}
 	case unregisterReceiver:
-		future := f.dchan.fsmUnregisterReceiver(cmd.Namespace, cmd.ServerId, cmd.Requester)
+		future := f.fm.fsmUnregisterReceiver(cmd.Namespace, cmd.ServerId, cmd.Requester)
 		if err := future.Wait(); err != nil {
 			return err
 		}
@@ -81,18 +88,18 @@ func (f *fsm) Apply(log *raft.Log) any {
 func (f *fsm) Restore(snapshot io.ReadCloser) error {
 	defer snapshot.Close()
 
-	var saved map[Namespace][]ServerId
+	var saved map[Namespace][]ServerID
 	dec := gob.NewDecoder(snapshot)
 	if err := dec.Decode(&saved); err != nil {
 		return err
 	}
 
-	return f.dchan.fsmRestore(saved)
+	return f.fm.fsmRestore(saved)
 }
 
 // Snapshot creates a snapshot of the state machine.
 func (f *fsm) Snapshot() (raft.FSMSnapshot, error) {
-	return &snapshot{saved: f.dchan.fsmGetState()}, nil
+	return &snapshot{saved: f.fm.fsmGetState()}, nil
 }
 
 // ApplyBatch applies a batch of log entries to the state machine.
@@ -114,7 +121,7 @@ func (f *fsm) ApplyBatch(logs []*raft.Log) []any {
 // We have to match the snapshot with the current state of the FSM
 // so creator has to block Apply e.g. created in Snapshot()
 type snapshot struct {
-	saved map[Namespace][]ServerId
+	saved map[Namespace][]ServerID
 }
 
 // Persist persists the snapshot to the sink.
