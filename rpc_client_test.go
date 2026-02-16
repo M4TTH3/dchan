@@ -18,6 +18,8 @@ import (
 // testServer implements DChanServiceServer for testing
 type testServer struct {
 	p.UnsafeDChanServiceServer
+	
+	receiveCh chan any
 
 	registerReceiverFunc   func(context.Context, *p.ReceiverRequest) (*emptypb.Empty, error)
 	unregisterReceiverFunc func(context.Context, *p.ReceiverRequest) (*emptypb.Empty, error)
@@ -53,7 +55,15 @@ func (s *testServer) RemoveVoter(ctx context.Context, req *p.ServerInfo) (*empty
 	return &emptypb.Empty{}, nil
 }
 
+// Caller must pass in a value using gobEncode
 func (s *testServer) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveResponse, error) {
+	if s.receiveCh != nil {
+		val, err := gobDecode(req.GetData())
+		if err != nil {
+			panic("error decoding value")
+		}
+		s.receiveCh <- val
+	}
 	return &p.ReceiveResponse{Received: true}, nil
 }
 

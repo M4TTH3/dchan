@@ -1,6 +1,8 @@
 package dchan
 
 import (
+	"context"
+
 	"github.com/hashicorp/raft"
 	p "github.com/m4tth3/dchan/proto"
 	"github.com/m4tth3/dchan/transport"
@@ -10,11 +12,13 @@ import (
 
 type client struct {
 	localID string
-	raft *raft.Raft
-	config *Config
-	
+	raft    *raft.Raft
+	config  *Config
+
 	cm transport.ConnectionManager
 }
+
+var _ sendReceiver = &client{}
 
 // Send a RegisterReceiver command to the Raft cluster.
 // to register a receiver for a namespace in this node.
@@ -126,6 +130,21 @@ func (c *client) unregisterAsVoter() Future {
 	return future
 }
 
+func (c *client) receive(ctx context.Context, target raft.ServerAddress, data []byte, namespace Namespace) (*p.ReceiveResponse, error) {
+	client, err := c.getClient(target)
+	if err != nil {
+		return nil, err
+	}
+
+	// User can add timeouts via grpc options.
+	res, err := client.Receive(ctx, &p.ReceiveRequest{
+		Data:      data,
+		Namespace: string(namespace),
+	})
+
+	return res, err
+}
+
 func (c *client) getLeaderClient() (p.DChanServiceClient, error) {
 	addr, _ := c.raft.LeaderWithID()
 	return c.getClient(addr)
@@ -139,5 +158,3 @@ func (c *client) getClient(address raft.ServerAddress) (p.DChanServiceClient, er
 
 	return p.NewDChanServiceClient(conn), nil
 }
-
-

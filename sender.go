@@ -1,9 +1,7 @@
 package dchan
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"math/rand"
 	"time"
 
@@ -17,7 +15,7 @@ type Message struct {
 	value any
 
 	// context for the gRPC call e.g. how long it should live for
-	ctx  context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	sent chan bool
@@ -62,11 +60,19 @@ type extChanManager interface {
 	waitForTarget(key uint32, namespace Namespace, ctx context.Context) (ServerID, bool)
 }
 
+// sendReceiver is implemented by the client to receive a message from a target server.
+//
+// This interface simplifies testing.
+type sendReceiver interface {
+	receive(ctx context.Context, target raft.ServerAddress, 
+		encoded []byte, namespace Namespace) (*p.ReceiveResponse, error)
+}
+
 type sender struct {
 	ecm extChanManager
 
 	config *Config
-	client *client
+	client sendReceiver
 
 	chann *channel
 
@@ -89,32 +95,20 @@ func (s *sender) send(v any, ctx context.Context) bool {
 			return false
 		}
 
-		client, err := s.client.getClient(raft.ServerAddress(target))
+		encoded, err := gobEncode(v)
 		if err != nil {
 			return false
 		}
 
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-
-		// Important to encode the pointer to the value to allow for any type.
-		// Users must register the type with gob.Register to allow for decoding.
-		if err := enc.Encode(&v); err != nil {
-			return false
-		}
-
-		// User can add timeouts via grpc options.
-		resp, err := client.Receive(ctx, &p.ReceiveRequest{
-			Data: buf.Bytes(),
-			Namespace: string(s.chann.namespace),
-		})
+		address := raft.ServerAddress(target)
+		res, err := s.client.receive(ctx, address, encoded, s.chann.namespace)
 		if err != nil {
 			return false
 		}
 
 		// In the protocol, if the server rejects the message,
 		// it should try the next server.
-		if resp.GetReceived() {
+		if res.GetReceived() {
 			break
 		}
 	}

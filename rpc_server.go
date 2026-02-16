@@ -1,9 +1,7 @@
 package dchan
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"errors"
 
 	"github.com/hashicorp/raft"
@@ -45,8 +43,8 @@ func (r server) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveR
 		return &p.ReceiveResponse{Received: false}, nil
 	}
 
-	var v any
-	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&v); err != nil {
+	v, err := gobDecode(data)
+	if err != nil {
 		return nil, err
 	}
 
