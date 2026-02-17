@@ -24,8 +24,8 @@ type receiverManager interface {
 }
 
 type server struct {
-	rm receiverManager
-	raft *raft.Raft
+	rm     receiverManager
+	raft   *raft.Raft
 	client *client
 
 	p.UnsafeDChanServiceServer // Ensure compilation
@@ -69,9 +69,9 @@ func (r server) Receive(ctx context.Context, req *p.ReceiveRequest) (*p.ReceiveR
 
 func (r server) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
 	cmd := fsmCmd{
-		Type: registerReceiver,
+		Type:      registerReceiver,
 		Namespace: Namespace(req.GetNamespace()),
-		ServerId: ServerID(req.GetServerId()),
+		ServerId:  ServerID(req.GetServerId()),
 		Requester: ServerID(req.GetRequester()),
 	}
 
@@ -90,9 +90,9 @@ func (r server) RegisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*
 
 func (r server) UnregisterReceiver(ctx context.Context, req *p.ReceiverRequest) (*emptypb.Empty, error) {
 	cmd := fsmCmd{
-		Type: unregisterReceiver,
+		Type:      unregisterReceiver,
 		Namespace: Namespace(req.GetNamespace()),
-		ServerId: ServerID(req.GetServerId()),
+		ServerId:  ServerID(req.GetServerId()),
 		Requester: ServerID(req.GetRequester()),
 	}
 

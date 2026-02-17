@@ -1,98 +1,136 @@
-# Distributed Go Channels
+# dchan - Distributed Go Channels
 
-A fun project to use various learnings from Distributed Systems (CS454) and Concurrency (CS343) courses.
+A Go library that extends native channel semantics across a cluster of nodes. Each server is a peer -- no dedicated broker or administrator is required. Inspired by learnings from Distributed Systems (CS454) and Concurrency (CS343).
 
-This project aims to create distributed channels with multiple senders and receivers built on top of Raft, RPC, and a Mailbox system similar to [Actors](https://onlinelibrary.wiley.com/doi/full/10.1002/spe.3262). The interface should be easy to use, feel native, and support high throughput. 
+## Quick Start
 
-For a native feel, the library is built on gRPC with Gob encoding to pass structs, and to simplify startup each server is a node. Therefore, a dedicated server administrator (like RabbitMQ) is not required to perform message passing.
-
-## Usage Example
 ```go
-// Server 1
-func main() {
-    options := []Options {
-        // Other Server IDs or at least one for discovery
-        // BoltDB path (file path)
-        // Register for Gob encodings
-    }
+import "github.com/m4tth3/dchan"
 
-    chann := dchan.New(..., options)
+// Every node creates a dchan instance with the same cluster info.
+ch, _ := dchan.New(myAddr, "cluster-1", peerAddrs, "./data")
+defer func() { ch.Close().Wait() }()
 
-    // <-chan any, CloseFunc, error 
-    fooCh, closeFoo, err = chann.Receive("FooChannel", bufSize)
-    defer closeFoo()
+// Receive on a namespace (any node)
+recvCh, closeRecv, _ := ch.Receive("orders", 10)
+defer func() { closeRecv().Wait() }()
+order := <-recvCh
 
-    item <- fooCh // receive from a sender
+// Send on the same namespace (any node)
+sendCh, closeSend, _ := ch.Send("orders", 10)
+defer func() { closeSend().Wait() }()
+sendCh <- Order{ID: 1, Item: "widget"}
 
-    // chan<- any, CloseFunc, error
-    oofCh, closeOof, err = chann.Send("OofChannel", bufSize)
-    defer closeOof()
-
-    // Send the message to one of the receivers in cluster
-    // Note: this could block indefinitely if no receivers and bufSize = 0
-    oofCh <- oof{}
-
-    // Optionally use:
-    timeout := time.Minute * 2 // really large message oof
-    oofObj := dchan.WithMessage(oof{}, timeout)
-
-    select{
-    case oofCh <- oof{}: // could block if buffer full
-    case oofObj.Done(): // cancel if timeout finishes first
-    }
-
-    // sent (bool) determines if we guaranteed know it's reached another channel
-    // otherwise it could be in any state e.g. received or not
-    sent := oofObj.Done()
+// Optionally track delivery with WithMessage
+msg := dchan.WithMessage(Order{ID: 2}, 30*time.Second)
+sendCh <- msg
+if msg.Done() {
+    // guaranteed received by a peer
 }
+```
 
-// Server 2
-func main() {
-    ...
-    // Sending to server 1 (or any other servers registered)
-    fooCh <- foo{}
+> Types sent through channels must be registered with `gob.Register(MyType{})` so they can be encoded/decoded through `any`.
 
-    // Receiving from server 1 (or any other servers registered)
-    fmt.Println((<-oofObj).(oof).String())
-}
+## Architecture
 
+dchan splits coordination and data transfer into two separate planes that share the same gRPC connections:
+
+```
+                        Raft Consensus (Control Plane)
+                 ┌──────────────────────────────────────┐
+                 │  Tracks which nodes receive which     │
+                 │  namespaces. Applied via FSM.         │
+                 │                                       │
+                 │   Leader ◄──► Follower ◄──► Follower  │
+                 └──────────────────────────────────────┘
+
+                        gRPC (Data Plane)
+                 ┌──────────────────────────────────────┐
+                 │  Messages sent peer-to-peer.          │
+                 │  Gob-encoded, round-robin across      │
+                 │  receivers. Supports backpressure.     │
+                 │                                       │
+                 │   Node A ────message────► Node B      │
+                 │   Node A ────message────► Node C      │
+                 └──────────────────────────────────────┘
+```
+
+### Send Flow
+
+```
+ ch <- value
+    │
+    ▼
+ sender goroutine
+    │
+    ├─ 1. waitForTarget()      ◄── reads receiver set (populated by Raft FSM)
+    │     (blocks if no receivers)
+    │
+    ├─ 2. gobEncode(value)
+    │
+    ├─ 3. gRPC Receive(data)   ──► target node pushes into local channel
+    │     (round-robin, retry on reject)
+    │
+    └─ 4. done / next message
+```
+
+### Receiver Registration Flow
+
+```
+ ch.Receive("ns", buf)
+    │
+    ├─ 1. Create local channel
+    │
+    ├─ 2. RegisterReceiver RPC ──► Raft leader
+    │                                  │
+    │                                  ▼
+    │                           raft.Apply(cmd)
+    │                                  │
+    │                                  ▼
+    │                           FSM adds this node to
+    │                           receiver set for "ns"
+    │                           (replicated to all nodes)
+    │
+    └─ 3. Return <-chan any to caller
 ```
 
 ## Implementation Details
 
-Main Implementation:
-- Built on HashiCorp/Raft and gRPC
-- Raft to coordinate (sequential consistency) among nodes whose receiving what namespaces
-- gRPC (with Raft connection reuse) to send messages node->node (supporting backpressure and async messaging)
-- At most once semantics
-- Use gob/encoding for messages, and users can define their own encoders simply
-- Broadcasts are sent via an epidemic algorithm over gRPC (TODO)
+- **Raft** (HashiCorp/Raft) provides sequentially consistent coordination of receiver state: which nodes are listening on which namespaces.
+- **gRPC** carries actual messages directly between sender and receiver nodes, bypassing the Raft log entirely.
+- **Shared connections**: the Raft transport and dchan message RPCs reuse the same gRPC server and client connections.
+- **Gob encoding** for messages. Users can send any Go type (including structs) registered with `gob.Register`.
+- **At-most-once semantics**: a message is delivered to exactly one receiver or not at all.
+- **Backpressure**: if a receiver's channel buffer is full, the sender blocks (or times out), naturally rate-limiting producers.
+- **Smart-client round-robin**: senders distribute messages across available receivers with a randomized starting offset.
+
+### Pros and Cons
+
+| Pros | Cons |
+|------|------|
+| No dedicated broker -- every node is a peer | Raft leader is a bottleneck for receiver state changes (register/unregister) |
+| Messages travel directly sender-to-receiver (low latency) | Messages are not persisted -- lost if the receiver crashes mid-flight |
+| Native Go channel interface (`chan<- any`, `<-chan any`) | At-most-once delivery; no built-in retries at the application level |
+| Raft ensures all nodes agree on who is receiving | Every node is a Raft voter, adding consensus overhead as the cluster grows |
+| Connection reuse between Raft and messaging reduces overhead | Cluster bootstrap requires a known set of initial addresses |
+| Built-in backpressure from channel semantics | Gob encoding requires type registration for custom types |
 
 ## Similar Projects
 
-Similar projects are very limited or hard-to-use:
-- Each channel creates a new connection (slow) 
-- Can only send to one server (bad for distribution) and each receiver requires its own server
-- Actor system implementations require too much boiler-plate and declarations. It's a framework in itself.
-- Require dedicated instances to distribute messages (MOM), however, it's functionally a bad version of as a service like RabbitMQ
+| Project | Limitation |
+|---------|-----------|
+| [distchan](https://github.com/dradtke/distchan) | One connection per channel, single receiver |
+| [netchan](https://github.com/billziss-gh/netchan) | Point-to-point only, no cluster coordination |
+| [protoactor-go](https://github.com/asynkron/protoactor-go) | Full actor framework, heavy boilerplate |
+| [goakt](https://github.com/Tochemey/goakt) | Full actor framework, requires separate discovery |
 
-A few examples are:
-- https://github.com/dradtke/distchan
-- https://github.com/billziss-gh/netchan
-- https://github.com/asynkron/protoactor-go
-- https://github.com/Tochemey/goakt
-
-This implementation focuses on the core of Actors, aka the Mailbox, which happens to share a similar philosophy to Go Channels. With minimal work, we could recreate an actor system.
+dchan focuses on the mailbox primitive at the core of actor systems -- distributed channels -- without the framework overhead.
 
 ## TODO
 
-TODO:
-- [x] Make the transport layer better.
-- [x] Add connection manager and connection hijacking (e.g. shared between Raft and Messangers)
-- [x] Add tests for the transport layer (especially more than 2 nodes)
-- [x] Setup interfaces for Distributed Channels
-- [x] Implement the Raft FSM to register receivers and functions to register in and out as receivers
-- [x] Implement the gRPC communications
-- [ ] Add tests!!!!
-- [ ] Implement Broadcast (but this can be done later)
-
+- [x] Transport layer with connection reuse
+- [x] Raft FSM for receiver coordination
+- [x] gRPC message passing with backpressure
+- [x] Integration tests (multi-node send/receive)
+- [ ] Epidemic broadcast (`Broadcast` API)
+- [ ] Chunked transfer for large messages

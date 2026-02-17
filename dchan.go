@@ -151,7 +151,12 @@ func New(address string, clusterId string, clusterAddresses []string, storeDir s
 		return nil, err
 	}
 
-	d := &Chan{Config: DefaultConfig()}
+	d := &Chan{
+		Config:           DefaultConfig(),
+		externalChannels: make(map[Namespace]*externalChannel),
+		senders:          make(map[Namespace]*channel),
+		receivers:        make(map[Namespace]*rchannel),
+	}
 	d.Config.Id = ServerID(address)
 	d.Config.ClusterId = clusterId
 	d.Config.ClusterAddresses = clusterAddresses
@@ -163,36 +168,49 @@ func New(address string, clusterId string, clusterAddresses []string, storeDir s
 		}
 	}
 
-	// Initialize the gRPC server if it's not provided.
+	// Create the transport manager first (needed by raft).
+	d.tm = transport.New(raft.ServerAddress(address), d.DialOptions)
+
+	// Initialize a partial client before raft so that newRaft() can call
+	// registerAsVoter (which needs cm and config) for non-bootstrap nodes.
+	d.client = client{
+		localID: address,
+		config:  &d.Config,
+		cm:      d.tm.ConnectionManager(),
+	}
+
+	// Create or reuse the gRPC server.
+	var listener net.Listener
 	if d.grpcServer == nil {
-		// Let's create a new gRPC server
-		tel, err := net.Listen("tcp", address)
+		var err error
+		listener, err = net.Listen("tcp", address)
 		if err != nil {
 			return nil, err
 		}
-
-		d.grpcServer = grpc.NewServer()
-		p.RegisterDChanServiceServer(d.grpcServer, server{rm: d, raft: d.raft, client: &d.client})
-		go d.grpcServer.Serve(tel)
+		d.grpcServer = grpc.NewServer(d.ServerOptions...)
 	}
 
-	// Create the transport manager.
-	d.tm = transport.New(raft.ServerAddress(address), d.DialOptions)
+	// Register all gRPC services before serving. The DChan service uses
+	// &d.raft (double pointer) so it sees the raft instance once set.
 	d.tm.Register(d.grpcServer)
+	dchanServer := server{rm: d, client: &d.client}
+	p.RegisterDChanServiceServer(d.grpcServer, &dchanServer)
 
-	// Initialize the cluster.
+	// Start serving so the raft transport is available for cluster formation.
+	if listener != nil {
+		go d.grpcServer.Serve(listener)
+	}
+
+	// Initialize the raft cluster. For non-bootstrap nodes this calls
+	// registerAsVoter, which uses d.client.cm to reach the leader.
 	r, err := d.newRaft()
 	if err != nil {
 		return nil, err
 	}
 
 	d.raft = r
-	d.client = client{
-		localID: address,
-		raft: r,
-		config: &d.Config,
-		cm: d.tm.ConnectionManager(),
-	}
+	d.client.raft = r
+	dchanServer.raft = r
 
 	return d, nil
 }
@@ -692,7 +710,7 @@ func (d *Chan) newRaft() (*raft.Raft, error) {
 
 		// Bootstrap the itself and the other nodes in the cluster
 		// will request to join the cluster.
-		future := d.raft.BootstrapCluster(raft.Configuration{
+		future := r.BootstrapCluster(raft.Configuration{
 			Servers: []raft.Server{
 				{
 					ID:       raft.ServerID(d.Id),
@@ -712,18 +730,18 @@ func (d *Chan) newRaft() (*raft.Raft, error) {
 		err := errors.New("failed to join the cluster after max retries")
 
 		for {
-			// Ask the next node in the list to become a voter.
-			if d.ClusterAddresses[0] == string(d.Id) {
-				continue
-			}
-
 			if retry == d.MaxJoinRetries {
 				return nil, err
 			}
 
+			target := d.ClusterAddresses[retry%len(d.ClusterAddresses)]
 			retry++
 
-			target := d.ClusterAddresses[retry%len(d.ClusterAddresses)]
+			// Skip self - we can't register as a voter with ourselves.
+			if target == string(d.Id) {
+				continue
+			}
+
 			future := d.registerAsVoter(target)
 			if tmErr := future.Wait(); tmErr != nil {
 				err = multierror.Append(err, tmErr)
